@@ -1,0 +1,15 @@
+streamlit
+pandas
+plotly
+st-supabase-connection
+supabase
+fpdf2
+requests
+Pillow
+groq
+qrcode[pil]
+streamlit-geolocation
+streamlit-js-eval
+folium
+streamlit-folium
+pytz
