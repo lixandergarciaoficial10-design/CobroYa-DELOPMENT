@@ -45,7 +45,7 @@ st.set_page_config(
 )
 
 # LIMPIEZA VISUAL (SIN TOCAR EL MENÚ DE HAMBURGUESA)
-st.markdown("""
+   st.markdown("""
     <style>
         /* Quita la barra decorativa superior pero deja los botones funcionales */
         header[data-testid="stHeader"] {
