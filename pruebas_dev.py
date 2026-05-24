@@ -21,17 +21,6 @@ import streamlit as st
 import re
 from st_supabase_connection import SupabaseConnection
 
-# 🆕 IMPORTS DEL MÓDULO DE PLANES
-from planes_module import (
-    init_planes_session_state,
-    calcular_precio_personalizado,
-    verificar_limite_sesiones,
-    verificar_limite_clientes,
-    verificar_limite_cuentas,
-    asignar_limites_plan,
-    render_planes_section
-)
-
 # --- INICIALIZACIÓN DE VARIABLES PARA EL MAPA ---
 if "mostrar_mapa" not in st.session_state:
     st.session_state.mostrar_mapa = False
@@ -75,6 +64,722 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 conn = st.connection("supabase", type=SupabaseConnection)
+
+
+# ============================================================================
+# 🆕 MÓDULO DE PLANES - INTEGRADO DIRECTAMENTE
+# ============================================================================
+
+# ============================================================================
+# MÓDULO DE PLANES - CobroYa SaaS
+# ============================================================================
+# Integración sin cambios en CSS global. Solo copia los imports y funciones.
+# La UI se renderiza dentro de tu flujo existente (elif st.session_state.config_sub == "Planes")
+# ============================================================================
+
+import streamlit as st
+import pandas as pd
+from datetime import datetime
+from st_supabase_connection import SupabaseConnection
+
+# ============================================================================
+# 1. INICIALIZACIÓN DE ESTADO DE SESIÓN (AGREGAR AL INIT GLOBAL)
+# ============================================================================
+def init_planes_session_state():
+    """Inicializa variables de sesión para planes (llama en el block de inicialización)"""
+    if "plan_customizado" not in st.session_state:
+        st.session_state.plan_customizado = {
+            "clientes": 100,
+            "cuentas": 200,
+            "sesiones": 1,
+            "gps": False,
+            "dashboard": False,
+            "ia": False,
+            "precio": 0
+        }
+
+# ============================================================================
+# 2. FUNCIÓN DE CÁLCULO DE PRECIO PERSONALIZADO (EXACTA)
+# ============================================================================
+def calcular_precio_personalizado(cant_clientes, cant_cuentas, cant_sesiones, 
+                                   necesita_gps=False, necesita_dashboard=False, necesita_ia=False):
+    """
+    Calcula el precio exacto del plan personalizado basado en tramos.
+    
+    Args:
+        cant_clientes: int, cantidad de clientes
+        cant_cuentas: int, cantidad de cuentas/préstamos
+        cant_sesiones: int, sesiones simultáneas
+        necesita_gps: bool
+        necesita_dashboard: bool
+        necesita_ia: bool
+    
+    Returns:
+        int, precio en RD$ redondeado
+    """
+    
+    # COSTO POR CLIENTES (Escala decreciente)
+    costo_clientes = 0
+    if cant_clientes <= 100:
+        costo_clientes = cant_clientes * 5.0
+    elif cant_clientes <= 400:
+        costo_clientes = 500 + ((cant_clientes - 100) * 1.50)
+    elif cant_clientes <= 1000:
+        costo_clientes = 950 + ((cant_clientes - 400) * 1.00)
+    else:
+        costo_clientes = 1550 + ((cant_clientes - 1000) * 0.50)
+    
+    # COSTO POR CUENTAS (Escala decreciente)
+    costo_cuentas = 0
+    if cant_cuentas <= 250:
+        costo_cuentas = cant_cuentas * 1.0
+    elif cant_cuentas <= 1000:
+        costo_cuentas = 250 + ((cant_cuentas - 250) * 0.30)
+    elif cant_cuentas <= 2500:
+        costo_cuentas = 475 + ((cant_cuentas - 1000) * 0.25)
+    else:
+        costo_cuentas = 850 + ((cant_cuentas - 2500) * 0.10)
+    
+    # Subtotal base
+    subtotal = costo_clientes + costo_cuentas
+    
+    # DESCUENTO POR VOLUMEN
+    if cant_clientes > 500:
+        subtotal *= 0.90  # 10% descuento
+    
+    # COSTO DE SESIONES (cada sesión extra cuesta RD$ 150)
+    costo_sesiones = max(0, cant_sesiones - 2) * 150
+    
+    # COSTO DE MÓDULOS
+    costo_modulos = 0
+    if necesita_dashboard:
+        costo_modulos += 50
+    if necesita_gps:
+        costo_modulos += 50
+    if necesita_ia:
+        costo_modulos += 25
+    
+    # TOTAL (mínimo RD$ 300)
+    total = max(300, round(subtotal + costo_sesiones + costo_modulos))
+    
+    return total
+
+
+# ============================================================================
+# 3. VALIDACIONES DE LÍMITES (CONTRA BASE DE DATOS)
+# ============================================================================
+def verificar_limite_sesiones(conn, owner_id):
+    """
+    Verifica si el usuario puede iniciar una nueva sesión.
+    Retorna True si puede iniciar, False si supera límite.
+    
+    Args:
+        conn: SupabaseConnection
+        owner_id: UUID del usuario propietario
+    
+    Returns:
+        dict: {"puede": bool, "mensaje": str, "activas": int, "limite": int}
+    """
+    try:
+        # Obtener límite de sesiones permitidas
+        config_data = conn.query(
+            "SELECT limite_sesiones_actual FROM configuracion WHERE user_id = :user_id",
+            params={"user_id": owner_id},
+            ttl=0
+        ).data
+        
+        if not config_data:
+            return {"puede": False, "mensaje": "Configuración no encontrada", "activas": 0, "limite": 0}
+        
+        limite_sesiones = config_data[0].get("limite_sesiones_actual", 1)
+        
+        # Contar sesiones activas (usuarios_dependientes con sesion_activa_id NOT NULL)
+        sesiones_activas = conn.query(
+            """SELECT COUNT(*) as total 
+               FROM usuarios_dependientes 
+               WHERE owner_id = :owner_id AND sesion_activa_id IS NOT NULL""",
+            params={"owner_id": owner_id},
+            ttl=0
+        ).data
+        
+        activas = sesiones_activas[0].get("total", 0) if sesiones_activas else 0
+        
+        puede_iniciar = activas < limite_sesiones
+        
+        return {
+            "puede": puede_iniciar,
+            "mensaje": f"Sesiones activas: {activas}/{limite_sesiones}" if puede_iniciar else 
+                      f"Límite de sesiones alcanzado ({activas}/{limite_sesiones}). Cierra una sesión primero.",
+            "activas": activas,
+            "limite": limite_sesiones
+        }
+    
+    except Exception as e:
+        return {"puede": False, "mensaje": f"Error verificando límite: {str(e)}", "activas": 0, "limite": 0}
+
+
+def verificar_limite_clientes(conn, owner_id):
+    """
+    Verifica si se puede agregar un nuevo cliente.
+    
+    Args:
+        conn: SupabaseConnection
+        owner_id: UUID del usuario
+    
+    Returns:
+        dict: {"puede": bool, "mensaje": str, "actuales": int, "limite": int}
+    """
+    try:
+        # Obtener límite de clientes
+        config_data = conn.query(
+            "SELECT limite_clientes_actual FROM configuracion WHERE user_id = :user_id",
+            params={"user_id": owner_id},
+            ttl=0
+        ).data
+        
+        if not config_data:
+            return {"puede": False, "mensaje": "Configuración no encontrada", "actuales": 0, "limite": 0}
+        
+        limite_clientes = config_data[0].get("limite_clientes_actual", 5)
+        
+        # Contar clientes existentes
+        clientes_actuales = conn.query(
+            "SELECT COUNT(*) as total FROM clientes WHERE user_id = :user_id",
+            params={"user_id": owner_id},
+            ttl=0
+        ).data
+        
+        actuales = clientes_actuales[0].get("total", 0) if clientes_actuales else 0
+        
+        puede_agregar = actuales < limite_clientes
+        
+        return {
+            "puede": puede_agregar,
+            "mensaje": f"Clientes: {actuales}/{limite_clientes}" if puede_agregar else
+                      f"Límite de clientes alcanzado ({actuales}/{limite_clientes}). Actualiza tu plan.",
+            "actuales": actuales,
+            "limite": limite_clientes
+        }
+    
+    except Exception as e:
+        return {"puede": False, "mensaje": f"Error verificando límite: {str(e)}", "actuales": 0, "limite": 0}
+
+
+def verificar_limite_cuentas(conn, owner_id):
+    """
+    Verifica si se puede crear una nueva cuenta/préstamo.
+    
+    Args:
+        conn: SupabaseConnection
+        owner_id: UUID del usuario
+    
+    Returns:
+        dict: {"puede": bool, "mensaje": str, "actuales": int, "limite": int}
+    """
+    try:
+        # Obtener límite de cuentas
+        config_data = conn.query(
+            "SELECT limite_cuentas_actual FROM configuracion WHERE user_id = :user_id",
+            params={"user_id": owner_id},
+            ttl=0
+        ).data
+        
+        if not config_data:
+            return {"puede": False, "mensaje": "Configuración no encontrada", "actuales": 0, "limite": 0}
+        
+        limite_cuentas = config_data[0].get("limite_cuentas_actual", 10)
+        
+        # Contar cuentas activas (estado = 'activa')
+        cuentas_actuales = conn.query(
+            "SELECT COUNT(*) as total FROM cuentas WHERE user_id = :user_id AND estado = 'activa'",
+            params={"user_id": owner_id},
+            ttl=0
+        ).data
+        
+        actuales = cuentas_actuales[0].get("total", 0) if cuentas_actuales else 0
+        
+        puede_agregar = actuales < limite_cuentas
+        
+        return {
+            "puede": puede_agregar,
+            "mensaje": f"Cuentas activas: {actuales}/{limite_cuentas}" if puede_agregar else
+                      f"Límite de cuentas alcanzado ({actuales}/{limite_cuentas}). Actualiza tu plan.",
+            "actuales": actuales,
+            "limite": limite_cuentas
+        }
+    
+    except Exception as e:
+        return {"puede": False, "mensaje": f"Error verificando límite: {str(e)}", "actuales": 0, "limite": 0}
+
+
+# ============================================================================
+# 4. ASIGNACIÓN DE LÍMITES (POST-PAGO)
+# ============================================================================
+def asignar_limites_plan(conn, user_id, limite_clientes, limite_cuentas, limite_sesiones):
+    """
+    Actualiza la tabla configuracion con los límites del plan seleccionado.
+    Se ejecuta inmediatamente después del pago confirmado.
+    
+    Args:
+        conn: SupabaseConnection
+        user_id: UUID del usuario
+        limite_clientes: int, límite de clientes permitidos
+        limite_cuentas: int, límite de cuentas/préstamos
+        limite_sesiones: int, límite de sesiones simultáneas
+    
+    Returns:
+        dict: {"exito": bool, "mensaje": str}
+    """
+    try:
+        conn.query(
+            """UPDATE configuracion 
+               SET limite_clientes_actual = :clientes,
+                   limite_cuentas_actual = :cuentas,
+                   limite_sesiones_actual = :sesiones,
+                   updated_at = NOW()
+               WHERE user_id = :user_id""",
+            params={
+                "clientes": limite_clientes,
+                "cuentas": limite_cuentas,
+                "sesiones": limite_sesiones,
+                "user_id": user_id
+            }
+        )
+        
+        return {
+            "exito": True,
+            "mensaje": f"Plan actualizado: {limite_clientes} clientes, {limite_cuentas} cuentas, {limite_sesiones} sesiones"
+        }
+    
+    except Exception as e:
+        return {
+            "exito": False,
+            "mensaje": f"Error al asignar límites: {str(e)}"
+        }
+
+
+# ============================================================================
+# 5. UI - TARJETAS DE PLANES FIJOS (PREMIUM)
+# ============================================================================
+def render_planes_cards():
+    """
+    Renderiza las 4 tarjetas de planes fijos con Material Icons (sin emojis).
+    Intégra directo en tu bloque: elif st.session_state.config_sub == "Planes"
+    """
+    
+    # CSS personalizado (sin tocar estilos globales)
+    st.markdown("""
+    <style>
+        .plan-card {
+            border: 1px solid #E2E8F0;
+            border-radius: 16px;
+            padding: 24px;
+            text-align: center;
+            height: 100%;
+            transition: all 0.3s ease;
+            background: white;
+            position: relative;
+        }
+        
+        .plan-card:hover {
+            border-color: #CBD5E1;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.08);
+        }
+        
+        .plan-card.featured {
+            border: 2px solid #3B82F6;
+            box-shadow: 0 5px 15px rgba(59, 130, 246, 0.2);
+        }
+        
+        .plan-badge {
+            background: #3B82F6;
+            color: white;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 600;
+            display: inline-block;
+            position: absolute;
+            top: -12px;
+            left: 50%;
+            transform: translateX(-50%);
+            letter-spacing: 0.5px;
+        }
+        
+        .plan-icon {
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+        
+        .plan-title {
+            font-size: 18px;
+            font-weight: 600;
+            color: #1E293B;
+            margin-bottom: 4px;
+        }
+        
+        .plan-price {
+            font-size: 32px;
+            font-weight: 700;
+            color: #0F172A;
+            margin: 8px 0;
+        }
+        
+        .plan-price-period {
+            font-size: 12px;
+            color: #64748B;
+            margin-bottom: 16px;
+        }
+        
+        .plan-description {
+            font-size: 13px;
+            color: #475569;
+            margin-bottom: 16px;
+            min-height: 30px;
+        }
+        
+        .plan-features {
+            text-align: left;
+            border-top: 1px solid #E2E8F0;
+            border-bottom: 1px solid #E2E8F0;
+            padding: 16px 0;
+            margin: 16px 0;
+        }
+        
+        .plan-feature {
+            font-size: 12px;
+            color: #475569;
+            padding: 6px 0;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .plan-feature-yes::before {
+            content: "✓";
+            color: #10B981;
+            font-weight: bold;
+            font-size: 14px;
+        }
+        
+        .plan-feature-no::before {
+            content: "✕";
+            color: #EF4444;
+            font-weight: bold;
+            font-size: 14px;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    # Renderizar 4 columnas
+    col_starter, col_crecimiento, col_pro, col_enterprise = st.columns(4, gap="medium")
+    
+    # ===== STARTER =====
+    with col_starter:
+        st.markdown("""
+        <div class="plan-card">
+            <div style="font-size: 32px; margin-bottom: 12px;">🚀</div>
+            <div class="plan-title">STARTER</div>
+            <div class="plan-price">RD$ 799<span style="font-size: 18px;">/mes</span></div>
+            <div class="plan-price-period">Prestamista Individual</div>
+            <div class="plan-description">Para cobradores independientes</div>
+            
+            <div class="plan-features">
+                <div class="plan-feature plan-feature-yes">100 clientes</div>
+                <div class="plan-feature plan-feature-yes">250 cuentas activas</div>
+                <div class="plan-feature plan-feature-yes">2 sesiones simultáneas</div>
+                <div class="plan-feature plan-feature-yes">Dashboard esencial</div>
+                <div class="plan-feature plan-feature-yes">Recibos sin marca de agua</div>
+                <div class="plan-feature plan-feature-yes">GPS ubicación básica</div>
+                <div class="plan-feature plan-feature-yes">IA (100 consultas/mes)</div>
+                <div class="plan-feature plan-feature-no">Códigos QR</div>
+                <div class="plan-feature plan-feature-no">Auditoría avanzada</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        if st.button("Seleccionar Starter", key="plan_starter", use_container_width=True):
+            # Aquí ejecuta tu lógica de pago/suscripción
+            asignar_limites_plan(st.connection("supabase", type=SupabaseConnection), 
+                               st.session_state.user["id"], 100, 250, 2)
+            st.success("✓ Plan Starter activado")
+            st.rerun()
+    
+    # ===== CRECIMIENTO =====
+    with col_crecimiento:
+        st.markdown("""
+        <div class="plan-card">
+            <div style="font-size: 32px; margin-bottom: 12px;">📈</div>
+            <div class="plan-title">CRECIMIENTO</div>
+            <div class="plan-price">RD$ 1,499<span style="font-size: 18px;">/mes</span></div>
+            <div class="plan-price-period">Operación en Desarrollo</div>
+            <div class="plan-description">Para múltiples rutas</div>
+            
+            <div class="plan-features">
+                <div class="plan-feature plan-feature-yes">400 clientes</div>
+                <div class="plan-feature plan-feature-yes">1,000 cuentas activas</div>
+                <div class="plan-feature plan-feature-yes">3 sesiones simultáneas</div>
+                <div class="plan-feature plan-feature-yes">Dashboard avanzado</div>
+                <div class="plan-feature plan-feature-yes">GPS verificación en calle</div>
+                <div class="plan-feature plan-feature-yes">Auditoría y Logs</div>
+                <div class="plan-feature plan-feature-yes">IA (150 consultas/mes)</div>
+                <div class="plan-feature plan-feature-no">Códigos QR</div>
+                <div class="plan-feature plan-feature-no">Exportación total</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        if st.button("Seleccionar Crecimiento", key="plan_crecimiento", use_container_width=True):
+            asignar_limites_plan(st.connection("supabase", type=SupabaseConnection), 
+                               st.session_state.user["id"], 400, 1000, 3)
+            st.success("✓ Plan Crecimiento activado")
+            st.rerun()
+    
+    # ===== PRO (RECOMENDADO) =====
+    with col_pro:
+        st.markdown("""
+        <div class="plan-card featured" style="margin-top: 0;">
+            <div class="plan-badge">RECOMENDADO</div>
+            <div style="font-size: 32px; margin-bottom: 12px; margin-top: 12px;">⚡</div>
+            <div class="plan-title" style="color: #3B82F6;">PRO</div>
+            <div class="plan-price">RD$ 2,499<span style="font-size: 18px;">/mes</span></div>
+            <div class="plan-price-period">Operación Comercial Completa</div>
+            <div class="plan-description">Agencias y oficinas de crédito</div>
+            
+            <div class="plan-features">
+                <div class="plan-feature plan-feature-yes">1,000 clientes</div>
+                <div class="plan-feature plan-feature-yes">2,500 cuentas activas</div>
+                <div class="plan-feature plan-feature-yes">5 sesiones simultáneas</div>
+                <div class="plan-feature plan-feature-yes">Dashboard completo + gráficos</div>
+                <div class="plan-feature plan-feature-yes">Planificador rutas GPS</div>
+                <div class="plan-feature plan-feature-yes">Códigos QR en recibos</div>
+                <div class="plan-feature plan-feature-yes">IA Avanzada (300 consultas)</div>
+                <div class="plan-feature plan-feature-yes">Marca personalizada</div>
+                <div class="plan-feature plan-feature-yes">Auditoría completa</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        if st.button("Mejorar a PRO", key="plan_pro", use_container_width=True):
+            asignar_limites_plan(st.connection("supabase", type=SupabaseConnection), 
+                               st.session_state.user["id"], 1000, 2500, 5)
+            st.success("✓ Plan PRO activado")
+            st.rerun()
+    
+    # ===== ENTERPRISE =====
+    with col_enterprise:
+        st.markdown("""
+        <div class="plan-card">
+            <div style="font-size: 32px; margin-bottom: 12px;">👑</div>
+            <div class="plan-title">ENTERPRISE</div>
+            <div class="plan-price">RD$ 7,999<span style="font-size: 18px;">/mes</span></div>
+            <div class="plan-price-period">Infraestructura a Gran Escala</div>
+            <div class="plan-description">Consorcios y grandes operaciones</div>
+            
+            <div class="plan-features">
+                <div class="plan-feature plan-feature-yes">10,000 clientes</div>
+                <div class="plan-feature plan-feature-yes">25,000 cuentas activas</div>
+                <div class="plan-feature plan-feature-yes">15 sesiones simultáneas</div>
+                <div class="plan-feature plan-feature-yes">Dashboard predictivo</div>
+                <div class="plan-feature plan-feature-yes">WhatsApp automatizado</div>
+                <div class="plan-feature plan-feature-yes">Backup empresarial diario</div>
+                <div class="plan-feature plan-feature-yes">IA ilimitada</div>
+                <div class="plan-feature plan-feature-yes">Soporte 24/7 dedicado</div>
+                <div class="plan-feature plan-feature-yes">Exportación total</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        if st.button("Contactar Ventas", key="plan_enterprise", use_container_width=True):
+            st.info("📧 Contacta a ventas@cobroya.com para plan Enterprise")
+
+
+# ============================================================================
+# 6. UI - MODAL DE PLAN PERSONALIZADO
+# ============================================================================
+def render_plan_personalizado_modal(conn):
+    """
+    Renderiza un diálogo (st.dialog) con inputs para plan personalizado.
+    Incluye validaciones en tiempo real y cálculo automático de precio.
+    
+    Args:
+        conn: SupabaseConnection para guardar plan si procede
+    """
+    
+    st.markdown("### 🛠️ Configura tu Plan Personalizado")
+    st.write("Ajusta capacidad y módulos según necesites. Los precios se calculan en tiempo real.")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    # INPUT 1: Cantidad de Clientes
+    with col1:
+        st.subheader("Capacidad de Clientes")
+        clientes = st.number_input(
+            "Cantidad de clientes",
+            min_value=1,
+            max_value=10000,
+            value=st.session_state.plan_customizado.get("clientes", 100),
+            step=10,
+            key="input_clientes"
+        )
+        st.session_state.plan_customizado["clientes"] = clientes
+    
+    # INPUT 2: Cantidad de Cuentas (con sugerencia automática)
+    with col2:
+        st.subheader("Cuentas / Préstamos")
+        
+        # Sugerencia inteligente: el doble
+        sugerencia_cuentas = max(clientes * 2, 2)
+        
+        cuentas = st.number_input(
+            "Cantidad de cuentas/préstamos",
+            min_value=1,
+            max_value=25000,
+            value=st.session_state.plan_customizado.get("cuentas", sugerencia_cuentas),
+            step=10,
+            help=f"Sugerencia: {sugerencia_cuentas} (el doble de clientes)",
+            key="input_cuentas"
+        )
+        st.session_state.plan_customizado["cuentas"] = cuentas
+    
+    # INPUT 3: Sesiones Simultáneas
+    with col3:
+        st.subheader("Sesiones Simultáneas")
+        sesiones = st.number_input(
+            "Dispositivos conectados al mismo tiempo",
+            min_value=1,
+            max_value=15,
+            value=st.session_state.plan_customizado.get("sesiones", 1),
+            step=1,
+            key="input_sesiones"
+        )
+        st.session_state.plan_customizado["sesiones"] = sesiones
+    
+    # VALIDACIÓN 1: Cuentas >= Clientes
+    st.write("---")
+    if cuentas < clientes:
+        st.error(
+            f"⚠️ Error: La cantidad de préstamos/cuentas ({cuentas}) debe ser igual o mayor que la cantidad de clientes ({clientes}).",
+            icon="❌"
+        )
+        validacion_basica_ok = False
+    else:
+        validacion_basica_ok = True
+    
+    # MÓDULOS OPCIONALES
+    st.subheader("Módulos Adicionales")
+    col_mod1, col_mod2, col_mod3 = st.columns(3)
+    
+    with col_mod1:
+        necesita_dashboard = st.checkbox(
+            "📊 Dashboard & Gráficos",
+            value=st.session_state.plan_customizado.get("dashboard", False),
+            key="check_dashboard"
+        )
+        st.caption("RD$ 50/mes")
+        st.session_state.plan_customizado["dashboard"] = necesita_dashboard
+    
+    with col_mod2:
+        necesita_gps = st.checkbox(
+            "🗺️ GPS & Verificación",
+            value=st.session_state.plan_customizado.get("gps", False),
+            key="check_gps"
+        )
+        st.caption("RD$ 50/mes")
+        st.session_state.plan_customizado["gps"] = necesita_gps
+    
+    with col_mod3:
+        necesita_ia = st.checkbox(
+            "🤖 Asistente IA",
+            value=st.session_state.plan_customizado.get("ia", False),
+            key="check_ia"
+        )
+        st.caption("RD$ 25/mes")
+        st.session_state.plan_customizado["ia"] = necesita_ia
+    
+    # CÁLCULO DE PRECIO EN TIEMPO REAL
+    st.write("---")
+    precio_calculado = calcular_precio_personalizado(
+        clientes, cuentas, sesiones,
+        necesita_gps, necesita_dashboard, necesita_ia
+    )
+    st.session_state.plan_customizado["precio"] = precio_calculado
+    
+    # MOSTRAR PRECIO
+    st.markdown(f"""
+    <div style="background: #F0F9FF; border: 2px solid #3B82F6; border-radius: 12px; padding: 20px; text-align: center;">
+        <p style="color: #1E293B; margin: 0; font-size: 14px;">💰 Tu Inversión Mensual Calculada:</p>
+        <h2 style="color: #3B82F6; margin: 10px 0 0 0;">RD$ {precio_calculado:,} / mes</h2>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # BOTÓN GUARDAR (bloqueado si validaciones fallan)
+    st.write("---")
+    col_btn1, col_btn2 = st.columns([1, 1])
+    
+    with col_btn1:
+        if not validacion_basica_ok or sesiones < 1:
+            st.button("✗ No puedo guardar", disabled=True, use_container_width=True)
+        else:
+            if st.button("✓ Activar Mi Plan Personalizado", use_container_width=True, key="btn_guardar_custom"):
+                # Aquí ejecuta la lógica de guardar y pago
+                resultado = asignar_limites_plan(
+                    conn,
+                    st.session_state.user["id"],
+                    clientes,
+                    cuentas,
+                    sesiones
+                )
+                
+                if resultado["exito"]:
+                    st.success(f"✓ {resultado['mensaje']}")
+                    st.rerun()
+                else:
+                    st.error(f"✗ {resultado['mensaje']}")
+    
+    with col_btn2:
+        if st.button("← Cancelar", use_container_width=True, key="btn_cancelar_custom"):
+            st.session_state.config_sub = "Principal"
+            st.rerun()
+
+
+# ============================================================================
+# 7. FUNCIÓN PRINCIPAL - INTÉGRA EN TU IF/ELIF EXISTENTE
+# ============================================================================
+def render_planes_section(conn):
+    """
+    Función principal que renderiza toda la sección de Planes.
+    Intégra esto en tu flujo: elif st.session_state.config_sub == "Planes"
+    
+    Args:
+        conn: SupabaseConnection
+    """
+    
+    # Botón para volver al menú principal
+    if st.button("← Volver", key="back_to_config_planes"):
+        st.session_state.config_sub = "Principal"
+        st.rerun()
+    
+    st.write("")  # Espaciador
+    
+    # Tabs: Planes Fijos vs Personalizado
+    tab1, tab2 = st.tabs(["📋 Planes Fijos", "🛠️ Plan Personalizado"])
+    
+    with tab1:
+        st.subheader("Selecciona el plan que mejor se adapta a tu negocio")
+        st.write("Todos incluyen soporte técnico y actualizaciones automáticas.")
+        st.write("")
+        
+        render_planes_cards()
+    
+    with tab2:
+        st.write("")
+        render_plan_personalizado_modal(conn)
+
+
+# ============================================================================
+# FIN MÓDULO DE PLANES
+# ============================================================================
 
 # Inicializar estados de sesión
 if "authenticated" not in st.session_state:
@@ -4217,10 +4922,10 @@ elif menu == "Configuración":
                 except Exception as e:
                     st.error(f"Error en el proceso de autenticación: {str(e)}")
 
+
     elif st.session_state.config_sub == "Plan":
         render_planes_section(conn)
 
-    elif st.session_state.config_sub == "Soporte":
     elif st.session_state.config_sub == "Soporte":
         # 1. Botón para regresar al menú de tarjetas
         if st.button("← Volver", key="back_to_main_config"):
