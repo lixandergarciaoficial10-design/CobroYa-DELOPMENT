@@ -2584,13 +2584,7 @@ elif menu == "Nueva Cuenta por Cobrar":
                     
                 if st.button("🚀 REGISTRAR Y ACTIVAR", use_container_width=True, disabled=not (capital > 0 and continuar and cliente_obj is not None)):
                     # GENERACIÓN DE DATOS REALES PARA AUDITORÍA
-                    # 🆕 VALIDAR LÍMITE CUENTAS
-                    val_cta = verificar_limite_cuentas(conn, u_id)
-                    if not val_cta["puede"]:
-                        st.error(f"❌ Límite de cuentas alcanzado: {val_cta['actuales']}/{val_cta['limite']}")
-                    else:
-                        import uuid
-                        
+                    import uuid
                     codigo_fac = f"FAC-{str(uuid.uuid4())[:8].upper()}"
                     
                     # IMPORTANTE: Tomamos la fecha de la tabla, por si el usuario la editó
@@ -2762,16 +2756,6 @@ elif menu == "👥 Todos mis Clientes":
                     if not st.session_state.reg_gps:
                         st.warning("⚠️ **Aviso:** Guardando cliente sin ubicación exacta.")
                     else:
-                        # 🆕 VALIDAR LÍMITE CLIENTES
-                if not st.session_state.reg_nombre or not st.session_state.reg_ced:
-                    st.error("❌ El **Nombre** y la **Cédula** son obligatorios.")
-                else:
-                    val_cli = verificar_limite_clientes(conn, u_id)
-                    if not val_cli["puede"]:
-                        st.error(f"❌ Límite de clientes alcanzado: {val_cli['actuales']}/{val_cli['limite']}")
-                    else:
-                        # Continuar con el código original
-                        
                         try:
                             lat_v, lon_v = st.session_state.reg_gps.split(",")
                             lat_final, lon_final = float(lat_v), float(lon_v)
@@ -4231,49 +4215,6 @@ elif menu == "Configuración":
         if fecha_vencimiento:
             try:
                 from datetime import datetime, date
-
-# ============================================================================
-# 🆕 VALIDACIONES DE LÍMITES (LEEN BD)
-# ============================================================================
-
-def verificar_limite_clientes(conn, user_id):
-    """Valida límite de clientes"""
-    try:
-        config = conn.table("configuracion").select("limite_clientes_actual").eq("user_id", user_id).execute().data
-        limite = config[0]["limite_clientes_actual"] if config else 999
-        clientes = conn.table("clientes").select("id").eq("user_id", user_id).execute().data
-        actuales = len(clientes) if clientes else 0
-        puede = actuales < limite
-        return {"puede": puede, "actuales": actuales, "limite": limite}
-    except:
-        return {"puede": True, "actuales": 0, "limite": 999}
-
-def verificar_limite_cuentas(conn, user_id):
-    """Valida límite de cuentas"""
-    try:
-        config = conn.table("configuracion").select("limite_cuentas_actual").eq("user_id", user_id).execute().data
-        limite = config[0]["limite_cuentas_actual"] if config else 999
-        cuentas = conn.table("cuentas").select("id").eq("user_id", user_id).eq("estado", "Activo").execute().data
-        actuales = len(cuentas) if cuentas else 0
-        puede = actuales < limite
-        return {"puede": puede, "actuales": actuales, "limite": limite}
-    except:
-        return {"puede": True, "actuales": 0, "limite": 999}
-
-def obtener_modulos_plan(conn, user_id):
-    """Obtiene módulos habilitados"""
-    try:
-        config = conn.table("configuracion").select("modulo_gps,modulo_dashboard,modulo_ia").eq("user_id", user_id).execute().data
-        if config:
-            return {
-                "gps": config[0].get("modulo_gps", False),
-                "dashboard": config[0].get("modulo_dashboard", False),
-                "ia": config[0].get("modulo_ia", False)
-            }
-        return {"gps": False, "dashboard": False, "ia": False}
-    except:
-        return {"gps": False, "dashboard": False, "ia": False}
-
                 fecha_obj = datetime.fromisoformat(fecha_vencimiento).date() if isinstance(fecha_vencimiento, str) else fecha_vencimiento
                 dias_restantes = (fecha_obj - date.today()).days
                 if dias_restantes > 0:
