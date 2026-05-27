@@ -38,27 +38,40 @@ if "datos_ruta_consultados" not in st.session_state:
 def gestionar_sesion_saas(owner_id, usuario_id, conn):
     try:
         ahora = datetime.now(timezone.utc)
-        # 1. Limpieza de seguridad
+        
+        # 1. Limpieza (Si esto falla, verás el error en pantalla)
         conn.table("sesiones_activas").delete().lt("expires_at", ahora.isoformat()).execute()
+        
         # 2. Buscar el límite
         res_conf = conn.table("configuracion").select("limite_sesiones_actual").eq("user_id", owner_id).execute()
         limite = res_conf.data[0].get("limite_sesiones_actual", 2) if res_conf.data else 2
+        
         # 3. Contar activas
         res_count = conn.table("sesiones_activas").select("id", count="exact").eq("owner_id", owner_id).execute()
         activas = res_count.count if res_count.count else 0
+        
         # 4. ¿Hay cupo?
         if activas >= limite:
             return False, f"Límite de {limite} sesiones alcanzado para esta cuenta.", None
-        # 5. Todo OK
+            
+        # 5. Intentar Insertar
         token = str(uuid.uuid4())
         expiracion = (ahora + timedelta(minutes=20)).isoformat()
+        
+        # ¡OJO! Si falla aquí, el error aparecerá en el st.error del except
         conn.table("sesiones_activas").insert({
-            "owner_id": owner_id, "usuario_id": usuario_id,
-            "session_token": token, "last_activity": ahora.isoformat(), "expires_at": expiracion
+            "owner_id": owner_id, 
+            "usuario_id": usuario_id,
+            "session_token": token, 
+            "last_activity": ahora.isoformat(), 
+            "expires_at": expiracion
         }).execute()
+        
         return True, "Acceso concedido", token
     except Exception as e:
-        return True, "Error red", None
+        # Esto te dirá el "maldito problema" real
+        st.error(f"❌ ERROR CRÍTICO DE BASE DE DATOS: {str(e)}")
+        return False, f"Error técnico: {str(e)}", None
 
 def renovar_actividad_saas(token, conn):
     if not token: return
