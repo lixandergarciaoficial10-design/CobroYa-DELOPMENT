@@ -201,35 +201,6 @@ if not st.session_state.authenticated:
         _, center, _ = st.columns([1, 2.5, 1])
         
         with center:
-
-# --- FUNCIÓN DE SEGURIDAD: LÍMITE DE SESIONES ---
-def verificar_limite_sesiones(owner_id, conn):
-    """
-    Bloquea el acceso si el negocio intenta usar más usuarios de los que paga su plan.
-    """
-    try:
-        # 1. Buscamos el límite que tiene asignado en su configuración
-        res_conf = conn.table("configuracion").select("limite_sesiones_actual").eq("user_id", owner_id).execute()
-        limite_plan = res_conf.data[0].get("limite_sesiones_actual") if res_conf.data else 2
-        
-        # Por seguridad, si viene nulo de la BD, asignamos 2 por defecto (Plan Starter)
-        if limite_plan is None:
-            limite_plan = 2
-            
-        # 2. Contamos cuántos empleados activos tiene creados en su empresa
-        res_emp = conn.table("usuarios_dependientes").select("id", count="exact").eq("owner_id", owner_id).eq("es_activo", True).execute()
-        empleados_activos = res_emp.count if res_emp.count else 0
-        
-        # 3. Matemáticas: Empleados Activos + 1 (El Admin/Dueño)
-        usuarios_totales = empleados_activos + 1
-        
-        if usuarios_totales > limite_plan:
-            return False, f"Límite excedido. Tu plan permite {limite_plan} usuarios, pero tienes {usuarios_totales} activos. Desactiva empleados o mejora tu plan."
-        
-        return True, "OK"
-    except Exception as e:
-        # Si falla la BD, dejamos pasar para no bloquear la app entera por un micro-corte
-        return True, "OK"
             
 # --- VISTA: LOGIN ---
             if st.session_state.page == "login":
@@ -276,44 +247,43 @@ def verificar_limite_sesiones(owner_id, conn):
                     if email and password:
                         login_exitoso = False
                         
-                        # 1. Intentamos entrar con Supabase Auth normal (El Dueño / Admin)
+                        # 1. Intentamos entrar con Supabase Auth normal
                         try:
                             res = conn.auth.sign_in_with_password({"email": email, "password": password})
                             
                             if res and res.user:
                                 usuario_id = res.user.id
                                 
-                                # 🚨 VERIFICACIÓN DE LÍMITE DE SESIONES (CANDADO ADMIN)
-                                permitido, mensaje_error = verificar_limite_sesiones(usuario_id, conn)
-                                if not permitido:
-                                    st.error(f"❌ {mensaje_error}")
-                                    conn.auth.sign_out() # Lo sacamos de inmediato a nivel de BD
-                                else:
-                                    # Verificamos si es un cobrador colado en el Auth
-                                    try:
-                                        resp_dep = conn.table("usuarios_dependientes").select("owner_id").eq("id", usuario_id).execute()
-                                        if resp_dep.data:
-                                            st.session_state.owner_id = resp_dep.data[0]['owner_id']
-                                            st.session_state.rol = "cobrador"
-                                        else:
-                                            st.session_state.owner_id = usuario_id
-                                            st.session_state.rol = "admin"
-                                    except:
+                                # 2. Verificamos si existe la tabla de dependientes (solo si ya la creaste)
+                                # Si da error porque la tabla no existe, el 'except' nos salvará y te dejará entrar.
+                                try:
+                                    resp_dep = conn.table("usuarios_dependientes").select("owner_id").eq("id", usuario_id).execute()
+                                    
+                                    if resp_dep.data:
+                                        # Es un cobrador creado por un administrador
+                                        st.session_state.owner_id = resp_dep.data[0]['owner_id']
+                                        st.session_state.rol = "cobrador"
+                                    else:
+                                        # Es el dueño/administrador principal
                                         st.session_state.owner_id = usuario_id
                                         st.session_state.rol = "admin"
+                                except:
+                                    # Si la tabla no existe aún, entras como Admin por defecto
+                                    st.session_state.owner_id = usuario_id
+                                    st.session_state.rol = "admin"
 
-                                    # Si pasó el candado, lo dejamos entrar
-                                    st.session_state.user = res.user
-                                    st.session_state.authenticated = True
-                                    login_exitoso = True
-                                    st.success("¡Bienvenido a CobroYa!")
-                                    st.rerun()
+                                # 3. Entramos a la App
+                                st.session_state.user = res.user
+                                st.session_state.authenticated = True
+                                login_exitoso = True
+                                st.success("¡Bienvenido a CobroYa!")
+                                st.rerun()
                                 
                         except Exception as e:
                             # Auth de Supabase falló, intentamos con empleados
                             login_exitoso = False
                         
-                        # 2. Intentamos entrar como Empleado (Cobrador)
+                        # Solo si el login con Auth falló, intentamos con empleados
                         if not login_exitoso:
                             try:
                                 import hashlib
@@ -321,34 +291,27 @@ def verificar_limite_sesiones(owner_id, conn):
                                 
                                 if resp_emp.data:
                                     empleado = resp_emp.data[0]
-                                    owner_id = empleado['owner_id']
-                                    
-                                    # 🚨 VERIFICACIÓN DE LÍMITE DE SESIONES (CANDADO EMPLEADO)
-                                    permitido, mensaje_error = verificar_limite_sesiones(owner_id, conn)
-                                    
-                                    if not permitido:
-                                        st.error(f"❌ {mensaje_error}")
-                                    elif not empleado.get("es_activo", False):
-                                        st.error("❌ Tu cuenta ha sido desactivada por el administrador.")
+                                    if not empleado.get("es_activo", False):
+                                        st.error("❌ Tu cuenta ha sido desactivada. Contacta al administrador.")
                                     else:
                                         password_hash_input = hashlib.sha256(password.encode()).hexdigest()
                                         if password_hash_input == empleado.get("password_hash"):
-                                            # ✅ Empleado autenticado correctamente y dentro del límite
+                                            # ✅ Empleado autenticado correctamente
+                                            # Guardamos datos del empleado en sesión
                                             st.session_state.empleado_id = empleado['id']
-                                            st.session_state.owner_id = owner_id
+                                            st.session_state.owner_id = empleado['owner_id']
                                             st.session_state.rol = empleado.get('rol', 'empleado')
                                             st.session_state.nombre_empleado = empleado.get('nombre', '')
-                                            
+                                            # Usamos el owner_id como user.id para que todo funcione como antes
                                             class EmpleadoUser:
                                                 def __init__(self, owner_id, email):
                                                     self.id = owner_id
                                                     self.email = email
                                                     self.user_metadata = {'rol': 'empleado'}
-                                            
-                                            st.session_state.user = EmpleadoUser(owner_id, email)
+                                            st.session_state.user = EmpleadoUser(empleado['owner_id'], email)
                                             st.session_state.authenticated = True
                                             login_exitoso = True
-                                            st.success(f"¡Bienvenido, {empleado.get('nombre', 'Equipo')}!")
+                                            st.success("¡Bienvenido a CobroYa!")
                                             st.rerun()
                                         else:
                                             st.error("❌ Correo o contraseña incorrectos")
