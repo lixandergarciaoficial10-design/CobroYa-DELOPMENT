@@ -201,6 +201,18 @@ if not st.session_state.authenticated:
         _, center, _ = st.columns([1, 2.5, 1])
         
         with center:
+
+def registrar_sesion_activa(owner_id, email, conn):
+    try:
+        conn.table("sesiones_activas").insert({
+            "owner_id": owner_id,
+            "email_usuario": email
+        }).execute()
+        return True, ""
+    except Exception as e:
+        if "LIMITE_ALCANZADO" in str(e):
+            return False, "❌ Límite de dispositivos superado. Cierra sesión en otro equipo."
+        return True, ""
             
 # --- VISTA: LOGIN ---
             if st.session_state.page == "login":
@@ -241,9 +253,9 @@ if not st.session_state.authenticated:
                     if st.button("¿Olvidaste tu contraseña?", key="btn_forgot"):
                         st.session_state.page = "forgot"
                         st.rerun()
-                
-# --- LÓGICA DE INICIO DE SESIÓN CORREGIDA (Lixander Edition) ---
-                if st.button("Iniciar sesión", type="primary", use_container_width=True):
+
+ # --- LÓGICA DE INICIO DE SESIÓN CORREGIDA (Lixander Edition - Blindada) ---
+               if st.button("Iniciar sesión", type="primary", use_container_width=True):
                     if email and password:
                         login_exitoso = False
                         
@@ -254,8 +266,7 @@ if not st.session_state.authenticated:
                             if res and res.user:
                                 usuario_id = res.user.id
                                 
-                                # 2. Verificamos si existe la tabla de dependientes (solo si ya la creaste)
-                                # Si da error porque la tabla no existe, el 'except' nos salvará y te dejará entrar.
+                                # 2. Verificamos si existe la tabla de dependientes
                                 try:
                                     resp_dep = conn.table("usuarios_dependientes").select("owner_id").eq("id", usuario_id).execute()
                                     
@@ -263,14 +274,33 @@ if not st.session_state.authenticated:
                                         # Es un cobrador creado por un administrador
                                         st.session_state.owner_id = resp_dep.data[0]['owner_id']
                                         st.session_state.rol = "cobrador"
+                                        
+                                        # --- VERIFICACIÓN DE GUARDIA: COBRADOR ---
+                                        permitido, error_msg = registrar_sesion_activa(st.session_state.owner_id, email, conn)
+                                        if not permitido:
+                                            st.error(error_msg)
+                                            st.stop()
                                     else:
                                         # Es el dueño/administrador principal
                                         st.session_state.owner_id = usuario_id
                                         st.session_state.rol = "admin"
+                                        
+                                        # --- VERIFICACIÓN DE GUARDIA: ADMIN ---
+                                        permitido, error_msg = registrar_sesion_activa(usuario_id, email, conn)
+                                        if not permitido:
+                                            st.error(error_msg)
+                                            st.stop()
+                                            
                                 except:
                                     # Si la tabla no existe aún, entras como Admin por defecto
                                     st.session_state.owner_id = usuario_id
                                     st.session_state.rol = "admin"
+                                    
+                                    # --- VERIFICACIÓN DE GUARDIA: FALLBACK ---
+                                    permitido, error_msg = registrar_sesion_activa(usuario_id, email, conn)
+                                    if not permitido:
+                                        st.error(error_msg)
+                                        st.stop()
 
                                 # 3. Entramos a la App
                                 st.session_state.user = res.user
@@ -296,18 +326,25 @@ if not st.session_state.authenticated:
                                     else:
                                         password_hash_input = hashlib.sha256(password.encode()).hexdigest()
                                         if password_hash_input == empleado.get("password_hash"):
+                                            
+                                            # --- VERIFICACIÓN DE GUARDIA: EMPLEADO ---
+                                            permitido, error_msg = registrar_sesion_activa(empleado['owner_id'], email, conn)
+                                            if not permitido:
+                                                st.error(error_msg)
+                                                st.stop()
+                                            
                                             # ✅ Empleado autenticado correctamente
-                                            # Guardamos datos del empleado en sesión
                                             st.session_state.empleado_id = empleado['id']
                                             st.session_state.owner_id = empleado['owner_id']
                                             st.session_state.rol = empleado.get('rol', 'empleado')
                                             st.session_state.nombre_empleado = empleado.get('nombre', '')
-                                            # Usamos el owner_id como user.id para que todo funcione como antes
+                                            
                                             class EmpleadoUser:
                                                 def __init__(self, owner_id, email):
                                                     self.id = owner_id
                                                     self.email = email
                                                     self.user_metadata = {'rol': 'empleado'}
+                                            
                                             st.session_state.user = EmpleadoUser(empleado['owner_id'], email)
                                             st.session_state.authenticated = True
                                             login_exitoso = True
@@ -321,12 +358,6 @@ if not st.session_state.authenticated:
                                 st.error("❌ Correo o contraseña incorrectos")
                     else:
                         st.warning("Por favor, completa todos los campos")
-                
-                st.write("")
-                st.markdown('<div style="text-align: center; font-size: 14px; color: #64748B;">¿No tienes cuenta?</div>', unsafe_allow_html=True)
-                if st.button("Crear cuenta nueva", key="btn_signup_nav", use_container_width=True):
-                    st.session_state.page = "signup"
-                    st.rerun()
                         
             # --- VISTA: REGISTRO ---
             elif st.session_state.page == "signup":
