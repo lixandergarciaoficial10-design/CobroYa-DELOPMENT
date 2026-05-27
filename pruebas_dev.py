@@ -19,6 +19,8 @@ from fpdf import FPDF
 from datetime import datetime
 import streamlit as st
 import re
+import uuid
+from datetime import datetime, timedelta, timezone
 from st_supabase_connection import SupabaseConnection
 
 # --- INICIALIZACIÓN DE VARIABLES PARA EL MAPA ---
@@ -33,8 +35,40 @@ if "consulta_activa" not in st.session_state:
 if "datos_ruta_consultados" not in st.session_state:
     st.session_state.datos_ruta_consultados = []
 
-import streamlit as st
-from st_supabase_connection import SupabaseConnection
+def gestionar_sesion_saas(owner_id, usuario_id, conn):
+    try:
+        ahora = datetime.now(timezone.utc)
+        # 1. Limpieza de seguridad
+        conn.table("sesiones_activas").delete().lt("expires_at", ahora.isoformat()).execute()
+        # 2. Buscar el límite
+        res_conf = conn.table("configuracion").select("limite_sesiones_actual").eq("user_id", owner_id).execute()
+        limite = res_conf.data[0].get("limite_sesiones_actual", 2) if res_conf.data else 2
+        # 3. Contar activas
+        res_count = conn.table("sesiones_activas").select("id", count="exact").eq("owner_id", owner_id).execute()
+        activas = res_count.count if res_count.count else 0
+        # 4. ¿Hay cupo?
+        if activas >= limite:
+            return False, f"Límite de {limite} sesiones alcanzado para esta cuenta.", None
+        # 5. Todo OK
+        token = str(uuid.uuid4())
+        expiracion = (ahora + timedelta(minutes=20)).isoformat()
+        conn.table("sesiones_activas").insert({
+            "owner_id": owner_id, "usuario_id": usuario_id,
+            "session_token": token, "last_activity": ahora.isoformat(), "expires_at": expiracion
+        }).execute()
+        return True, "Acceso concedido", token
+    except Exception as e:
+        return True, "Error red", None
+
+def renovar_actividad_saas(token, conn):
+    if not token: return
+    try:
+        ahora = datetime.now(timezone.utc)
+        nueva_exp = (ahora + timedelta(minutes=20)).isoformat()
+        conn.table("sesiones_activas").update({
+            "last_activity": ahora.isoformat(), "expires_at": nueva_exp
+        }).eq("session_token", token).execute()
+    except: pass
 
 # 1. CONFIGURACIÓN INICIAL Y CONEXIÓN
 st.set_page_config(
@@ -266,41 +300,28 @@ def registrar_sesion_activa(owner_id, email, conn):
                             if res and res.user:
                                 usuario_id = res.user.id
                                 
-                                # 2. Verificamos si existe la tabla de dependientes
+                                # 2. Determinamos Rol y quién es el Dueño (Owner)
                                 try:
                                     resp_dep = conn.table("usuarios_dependientes").select("owner_id").eq("id", usuario_id).execute()
-                                    
                                     if resp_dep.data:
-                                        # Es un cobrador creado por un administrador
                                         st.session_state.owner_id = resp_dep.data[0]['owner_id']
                                         st.session_state.rol = "cobrador"
-                                        
-                                        # --- VERIFICACIÓN DE GUARDIA: COBRADOR ---
-                                        permitido, error_msg = registrar_sesion_activa(st.session_state.owner_id, email, conn)
-                                        if not permitido:
-                                            st.error(error_msg)
-                                            st.stop()
                                     else:
-                                        # Es el dueño/administrador principal
                                         st.session_state.owner_id = usuario_id
                                         st.session_state.rol = "admin"
-                                        
-                                        # --- VERIFICACIÓN DE GUARDIA: ADMIN ---
-                                        permitido, error_msg = registrar_sesion_activa(usuario_id, email, conn)
-                                        if not permitido:
-                                            st.error(error_msg)
-                                            st.stop()
-                                            
                                 except:
-                                    # Si la tabla no existe aún, entras como Admin por defecto
                                     st.session_state.owner_id = usuario_id
                                     st.session_state.rol = "admin"
-                                    
-                                    # --- VERIFICACIÓN DE GUARDIA: FALLBACK ---
-                                    permitido, error_msg = registrar_sesion_activa(usuario_id, email, conn)
-                                    if not permitido:
-                                        st.error(error_msg)
-                                        st.stop()
+
+                                # --- 🛡️ GESTIÓN PROFESIONAL DE SESIÓN (SaaS) ---
+                                permitido, error_msg, token = gestionar_sesion_saas(st.session_state.owner_id, usuario_id, conn)
+                                if not permitido:
+                                    st.error(f"🚫 {error_msg}")
+                                    st.stop()
+                                
+                                # Guardamos el token para renovarlo en cada clic
+                                st.session_state.session_token = token
+                                # -----------------------------------------------
 
                                 # 3. Entramos a la App
                                 st.session_state.user = res.user
@@ -310,10 +331,9 @@ def registrar_sesion_activa(owner_id, email, conn):
                                 st.rerun()
                                 
                         except Exception as e:
-                            # Auth de Supabase falló, intentamos con empleados
                             login_exitoso = False
                         
-                        # Solo si el login con Auth falló, intentamos con empleados
+                        # Solo si el login con Auth falló, intentamos con empleados (Tabla Manual)
                         if not login_exitoso:
                             try:
                                 import hashlib
@@ -327,13 +347,15 @@ def registrar_sesion_activa(owner_id, email, conn):
                                         password_hash_input = hashlib.sha256(password.encode()).hexdigest()
                                         if password_hash_input == empleado.get("password_hash"):
                                             
-                                            # --- VERIFICACIÓN DE GUARDIA: EMPLEADO ---
-                                            permitido, error_msg = registrar_sesion_activa(empleado['owner_id'], email, conn)
+                                            # --- 🛡️ GESTIÓN PROFESIONAL DE SESIÓN (EMPLEADO) ---
+                                            permitido, error_msg, token = gestionar_sesion_saas(empleado['owner_id'], empleado['id'], conn)
                                             if not permitido:
-                                                st.error(error_msg)
+                                                st.error(f"🚫 {error_msg}")
                                                 st.stop()
                                             
-                                            # ✅ Empleado autenticado correctamente
+                                            st.session_state.session_token = token
+                                            # ---------------------------------------------------
+                                            
                                             st.session_state.empleado_id = empleado['id']
                                             st.session_state.owner_id = empleado['owner_id']
                                             st.session_state.rol = empleado.get('rol', 'empleado')
@@ -456,6 +478,8 @@ def registrar_sesion_activa(owner_id, email, conn):
     st.stop()
 
 # --- SI PASA DE AQUÍ, EL USUARIO ESTÁ DENTRO ---
+# RENOVAMOS LA SESIÓN EN CADA CLIC
+renovar_actividad_saas(st.session_state.get("session_token"), conn)
 u_id = st.session_state.user.id
 
 import urllib.parse
