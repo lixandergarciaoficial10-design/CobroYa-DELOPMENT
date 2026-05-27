@@ -235,18 +235,6 @@ if not st.session_state.authenticated:
         _, center, _ = st.columns([1, 2.5, 1])
         
         with center:
-
-def registrar_sesion_activa(owner_id, email, conn):
-    try:
-        conn.table("sesiones_activas").insert({
-            "owner_id": owner_id,
-            "email_usuario": email
-        }).execute()
-        return True, ""
-    except Exception as e:
-        if "LIMITE_ALCANZADO" in str(e):
-            return False, "❌ Límite de dispositivos superado. Cierra sesión en otro equipo."
-        return True, ""
             
 # --- VISTA: LOGIN ---
             if st.session_state.page == "login":
