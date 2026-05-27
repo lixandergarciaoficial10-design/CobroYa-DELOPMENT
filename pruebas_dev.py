@@ -482,6 +482,30 @@ def registrar_sesion_activa(owner_id, email, conn):
 renovar_actividad_saas(st.session_state.get("session_token"), conn)
 u_id = st.session_state.user.id
 
+# --- 🛡️ FILTRO DE MIGRACIÓN PARA USUARIOS YA LOGUEADOS ---
+# Si el usuario ya está autenticado pero NO tiene un token de sesión (usuarios viejos)
+if st.session_state.get("authenticated") and "session_token" not in st.session_state:
+    # Intentamos registrar su sesión automáticamente
+    u_id_actual = st.session_state.user.id
+    o_id_actual = st.session_state.owner_id
+    
+    permitido, mensaje, token = gestionar_sesion_saas(o_id_actual, u_id_actual, conn)
+    
+    if permitido:
+        # Se le asigna su token y puede seguir trabajando
+        st.session_state.session_token = token
+    else:
+        # Si el cupo está lleno, lo sacamos para que respete el límite
+        st.session_state.clear()
+        st.error(f"Sincronizando seguridad: {mensaje}")
+        st.info("Por favor, inicia sesión nuevamente.")
+        st.stop()
+
+# Si ya tiene token, simplemente renovamos su actividad
+if st.session_state.get("session_token"):
+    renovar_actividad_saas(st.session_state.session_token, conn)
+# -------------------------------------------------------
+
 import urllib.parse
 from datetime import datetime
 
