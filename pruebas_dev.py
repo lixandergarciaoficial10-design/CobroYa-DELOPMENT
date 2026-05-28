@@ -300,8 +300,9 @@ if not st.session_state.authenticated:
                     if st.button("¿Olvidaste tu contraseña?", key="btn_forgot"):
                         st.session_state.page = "forgot"
                         st.rerun()
+                        
 # --- LÓGICA DE INICIO DE SESIÓN CORREGIDA (Lixander Edition - Blindada) ---
-                if st.button("Iniciar sesión", type="primary", use_container_width=True):
+                if st.button("Iniciar sesión", type="primary", width='stretch'):
                     if email and password:
                         user_auth = None
                         empleado_data = None
