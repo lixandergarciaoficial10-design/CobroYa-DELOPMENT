@@ -36,24 +36,30 @@ if "datos_ruta_consultados" not in st.session_state:
     st.session_state.datos_ruta_consultados = []
 
 def gestionar_sesion_saas(owner_id, usuario_id, conn):
+    print(f"DEBUG: Iniciando gestionar_sesion_saas para owner: {owner_id}, user: {usuario_id}")
     try:
         ahora = datetime.now(timezone.utc)
         
-        # 1. Limpieza
+        # 1. Intentar limpiar sesiones viejas
+        print("DEBUG: Intentando limpiar sesiones antiguas...")
         conn.table("sesiones_activas").delete().lt("expires_at", ahora.isoformat()).execute()
         
-        # 2. Buscar límite
+        # 2. Obtener límite
+        print("DEBUG: Consultando límite de sesiones...")
         res_conf = conn.table("configuracion").select("limite_sesiones_actual").eq("user_id", owner_id).execute()
         limite = res_conf.data[0].get("limite_sesiones_actual", 2) if res_conf.data else 2
+        print(f"DEBUG: Límite configurado: {limite}")
         
         # 3. Contar activas
         res_count = conn.table("sesiones_activas").select("id", count="exact").eq("owner_id", owner_id).execute()
-        activas = res_count.count if res_count.count else 0
+        activas = res_count.count if res_count.count is not None else 0
+        print(f"DEBUG: Sesiones activas encontradas: {activas}")
         
         if activas >= limite:
+            print("DEBUG: Límite alcanzado, bloqueando acceso.")
             return False, f"Límite de {limite} sesiones alcanzado.", None
             
-        # 4. Inserción con DEPURACIÓN
+        # 4. Insertar nueva sesión
         token = str(uuid.uuid4())
         expiracion = (ahora + timedelta(minutes=20)).isoformat()
         datos_sesion = {
@@ -64,19 +70,20 @@ def gestionar_sesion_saas(owner_id, usuario_id, conn):
             "expires_at": expiracion
         }
         
-        # Intentamos insertar
+        print(f"DEBUG: Intentando insertar sesión: {datos_sesion}")
         res_insert = conn.table("sesiones_activas").insert(datos_sesion).execute()
         
-        # SI LA RESPUESTA ESTÁ VACÍA, AQUÍ VEREMOS EL PORQUÉ EN LA TERMINAL
-        if not res_insert.data:
-            print(f"DEBUG: Supabase rechazó la inserción. Respuesta: {res_insert}")
-            return False, "Error al guardar sesión: Supabase rechazó la entrada.", None
+        # Verificamos si realmente se insertó
+        if hasattr(res_insert, 'data') and res_insert.data:
+            print("DEBUG: Inserción exitosa.")
+            return True, "Acceso concedido", token
+        else:
+            print(f"DEBUG: Fallo en inserción. Respuesta completa: {res_insert}")
+            return False, "Error: Supabase no devolvió confirmación de inserción.", None
             
-        return True, "Acceso concedido", token
-        
     except Exception as e:
-        print(f"DEBUG EXCEPCIÓN: {str(e)}")
-        return False, f"Error crítico: {str(e)}", None
+        print(f"DEBUG: EXCEPCIÓN FATAL EN SESIÓN: {str(e)}")
+        return False, f"Error técnico: {str(e)}", None
         
 def renovar_actividad_saas(token, conn):
     if not token: return
