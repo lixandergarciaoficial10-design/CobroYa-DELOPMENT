@@ -40,49 +40,52 @@ def gestionar_sesion_saas(owner_id, usuario_id, conn):
     try:
         ahora = datetime.now(timezone.utc)
         
-        # 1. Intentar limpiar sesiones viejas
-        print("DEBUG: Intentando limpiar sesiones antiguas...")
+        # 1. Limpieza (Si falla aquí, el try/except nos dirá por qué)
         conn.table("sesiones_activas").delete().lt("expires_at", ahora.isoformat()).execute()
         
         # 2. Obtener límite
-        print("DEBUG: Consultando límite de sesiones...")
         res_conf = conn.table("configuracion").select("limite_sesiones_actual").eq("user_id", owner_id).execute()
         limite = res_conf.data[0].get("limite_sesiones_actual", 2) if res_conf.data else 2
-        print(f"DEBUG: Límite configurado: {limite}")
         
         # 3. Contar activas
         res_count = conn.table("sesiones_activas").select("id", count="exact").eq("owner_id", owner_id).execute()
         activas = res_count.count if res_count.count is not None else 0
-        print(f"DEBUG: Sesiones activas encontradas: {activas}")
         
         if activas >= limite:
-            print("DEBUG: Límite alcanzado, bloqueando acceso.")
             return False, f"Límite de {limite} sesiones alcanzado.", None
             
-        # 4. Insertar nueva sesión
+        # 4. Insertar nueva sesión (CON LAS CORRECCIONES DE CLAUDE)
         token = str(uuid.uuid4())
+        session_id = str(uuid.uuid4()) # ID obligatorio
         expiracion = (ahora + timedelta(minutes=20)).isoformat()
+        
         datos_sesion = {
+            "id": session_id,
             "owner_id": str(owner_id), 
             "usuario_id": str(usuario_id),
             "session_token": token, 
             "last_activity": ahora.isoformat(), 
-            "expires_at": expiracion
+            "expires_at": expiracion,
+            "created_at": ahora.isoformat() # Campo obligatorio
         }
         
         print(f"DEBUG: Intentando insertar sesión: {datos_sesion}")
         res_insert = conn.table("sesiones_activas").insert(datos_sesion).execute()
         
-        # Verificamos si realmente se insertó
+        # --- VERIFICACIÓN DE ERROR (LA CLAVE) ---
+        if hasattr(res_insert, 'error') and res_insert.error:
+            print(f"DEBUG: ERROR DB DETECTADO: {res_insert.error}")
+            return False, f"Error BD: {res_insert.error}", None
+            
         if hasattr(res_insert, 'data') and res_insert.data:
             print("DEBUG: Inserción exitosa.")
             return True, "Acceso concedido", token
         else:
-            print(f"DEBUG: Fallo en inserción. Respuesta completa: {res_insert}")
-            return False, "Error: Supabase no devolvió confirmación de inserción.", None
+            print(f"DEBUG: Fallo. Respuesta completa: {res_insert}")
+            return False, "Error: Supabase no devolvió confirmación.", None
             
     except Exception as e:
-        print(f"DEBUG: EXCEPCIÓN FATAL EN SESIÓN: {str(e)}")
+        print(f"DEBUG: EXCEPCIÓN FATAL: {str(e)}")
         return False, f"Error técnico: {str(e)}", None
         
 def renovar_actividad_saas(token, conn):
