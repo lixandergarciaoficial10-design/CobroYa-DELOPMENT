@@ -40,8 +40,11 @@ def gestionar_sesion_saas(owner_id, usuario_id, conn):
     try:
         ahora = datetime.now(timezone.utc)
         
-        # 1. Limpieza (Si falla aquí, el try/except nos dirá por qué)
-        conn.table("sesiones_activas").delete().lt("expires_at", ahora.isoformat()).execute()
+        # 1. Limpieza (Protegida para que un fallo aquí no bloquee el login)
+        try:
+            conn.table("sesiones_activas").delete().lt("expires_at", ahora.isoformat()).execute()
+        except Exception as e:
+            print(f"DEBUG: Error al limpiar sesiones antiguas (no crítico): {e}")
         
         # 2. Obtener límite
         res_conf = conn.table("configuracion").select("limite_sesiones_actual").eq("user_id", owner_id).execute()
@@ -54,9 +57,9 @@ def gestionar_sesion_saas(owner_id, usuario_id, conn):
         if activas >= limite:
             return False, f"Límite de {limite} sesiones alcanzado.", None
             
-        # 4. Insertar nueva sesión (CON LAS CORRECCIONES DE CLAUDE)
+        # 4. Insertar nueva sesión (CON TODOS LOS CAMPOS OBLIGATORIOS)
         token = str(uuid.uuid4())
-        session_id = str(uuid.uuid4()) # ID obligatorio
+        session_id = str(uuid.uuid4()) # ID obligatorio generado desde Python
         expiracion = (ahora + timedelta(minutes=20)).isoformat()
         
         datos_sesion = {
@@ -70,23 +73,22 @@ def gestionar_sesion_saas(owner_id, usuario_id, conn):
         }
         
         print(f"DEBUG: Intentando insertar sesión: {datos_sesion}")
+        
+        # 5. Ejecución
+        # En la librería actual, si hay problemas de permisos o de esquema, el código saltará al 'except'
         res_insert = conn.table("sesiones_activas").insert(datos_sesion).execute()
         
-        # --- VERIFICACIÓN DE ERROR (LA CLAVE) ---
-        if hasattr(res_insert, 'error') and res_insert.error:
-            print(f"DEBUG: ERROR DB DETECTADO: {res_insert.error}")
-            return False, f"Error BD: {res_insert.error}", None
-            
-        if hasattr(res_insert, 'data') and res_insert.data:
+        if res_insert.data:
             print("DEBUG: Inserción exitosa.")
             return True, "Acceso concedido", token
         else:
-            print(f"DEBUG: Fallo. Respuesta completa: {res_insert}")
+            print(f"DEBUG: Respuesta vacía de Supabase: {res_insert}")
             return False, "Error: Supabase no devolvió confirmación.", None
             
     except Exception as e:
-        print(f"DEBUG: EXCEPCIÓN FATAL: {str(e)}")
-        return False, f"Error técnico: {str(e)}", None
+        # Aquí caerán todos los errores reales (RLS, permisos, tipos de datos, etc.)
+        print(f"DEBUG: EXCEPCIÓN FATAL EN BD: {str(e)}")
+        return False, f"Error técnico en BD: {str(e)}", None
         
 def renovar_actividad_saas(token, conn):
     if not token: return
@@ -305,92 +307,7 @@ if not st.session_state.authenticated:
                         st.rerun()
                         
 # --- LÓGICA DE INICIO DE SESIÓN CORREGIDA (Lixander Edition - Blindada) ---
-                if st.button("Iniciar sesión", type="primary", width='stretch'):
-                    if email and password:
-                        user_auth = None
-                        empleado_data = None
-                        es_admin = False
-                        
-                        # 1. Intentamos Auth de Supabase (Admin)
-                        try:
-                            res = conn.auth.sign_in_with_password({"email": email, "password": password})
-                            if res and res.user:
-                                user_auth = res.user
-                                es_admin = True
-                        except Exception:
-                            pass
-                        
-                        # 2. Si el Auth falló, intentamos con empleados (Tabla Manual)
-                        if not user_auth:
-                            try:
-                                import hashlib
-                                resp_emp = conn.table("usuarios_dependientes").select("*").eq("email", email).execute()
-                                if resp_emp.data:
-                                    emp = resp_emp.data[0]
-                                    password_hash_input = hashlib.sha256(password.encode()).hexdigest()
-                                    if password_hash_input == emp.get("password_hash"):
-                                        if not emp.get("es_activo", False):
-                                            st.error("❌ Tu cuenta ha sido desactivada. Contacta al administrador.")
-                                            st.stop()
-                                        empleado_data = emp
-                                        es_admin = False
-                            except Exception as e:
-                                st.error(f"Error técnico al consultar empleados: {e}")
-                        
-                        # 3. Resultado de validación
-                        if not user_auth and not empleado_data:
-                            st.error("❌ Correo o contraseña incorrectos")
-                        
-                        # 4. Procesar Sesión (Si las credenciales son correctas)
-                        else:
-                            if es_admin:
-                                usuario_id = user_auth.id
-                                try:
-                                    resp_dep = conn.table("usuarios_dependientes").select("owner_id").eq("id", usuario_id).execute()
-                                    owner_id = resp_dep.data[0]['owner_id'] if resp_dep.data else usuario_id
-                                except:
-                                    owner_id = usuario_id
-                                
-                                permitido, error_msg, token = gestionar_sesion_saas(owner_id, usuario_id, conn)
-                                
-                                if permitido:
-                                    st.session_state.owner_id = owner_id
-                                    st.session_state.rol = "admin"
-                                    st.session_state.user = user_auth
-                                    st.session_state.session_token = token
-                                    st.session_state.authenticated = True
-                                    st.success("¡Bienvenido a CobroYa!")
-                                    st.rerun()
-                                else:
-                                    st.error(f"🚫 {error_msg}")
-                            
-                            else: # Es un empleado
-                                owner_id = empleado_data['owner_id']
-                                usuario_id = empleado_data['id']
-                                
-                                permitido, error_msg, token = gestionar_sesion_saas(owner_id, usuario_id, conn)
-                                
-                                if permitido:
-                                    st.session_state.empleado_id = usuario_id
-                                    st.session_state.owner_id = owner_id
-                                    st.session_state.rol = empleado_data.get('rol', 'empleado')
-                                    st.session_state.nombre_empleado = empleado_data.get('nombre', '')
-                                    
-                                    class EmpleadoUser:
-                                        def __init__(self, owner_id, email):
-                                            self.id = owner_id
-                                            self.email = email
-                                            self.user_metadata = {'rol': 'empleado'}
-                                    
-                                    st.session_state.user = EmpleadoUser(owner_id, email)
-                                    st.session_state.session_token = token
-                                    st.session_state.authenticated = True
-                                    st.success("¡Bienvenido a CobroYa!")
-                                    st.rerun()
-                                else:
-                                    st.error(f"🚫 {error_msg}")
-                    else:
-                        st.warning("Por favor, completa todos los campos")
+
 
                         
             # --- VISTA: REGISTRO ---
