@@ -307,7 +307,90 @@ if not st.session_state.authenticated:
                         st.rerun()
                         
 # --- LÓGICA DE INICIO DE SESIÓN CORREGIDA (Lixander Edition - Blindada) ---
-
+                if st.button("Iniciar sesión", type="primary"):
+                    if email and password:
+                        user_auth = None
+                        empleado_data = None
+                        es_admin = False
+                        
+                        # 1. Intentamos Auth de Supabase (Admin)
+                        try:
+                            res = conn.auth.sign_in_with_password({"email": email, "password": password})
+                            if res and res.user:
+                                user_auth = res.user
+                                es_admin = True
+                        except Exception:
+                            pass
+                        
+                        # 2. Si el Auth falló, intentamos con empleados (Tabla Manual)
+                        if not user_auth:
+                            try:
+                                import hashlib
+                                resp_emp = conn.table("usuarios_dependientes").select("*").eq("email", email).execute()
+                                if resp_emp.data:
+                                    emp = resp_emp.data[0]
+                                    password_hash_input = hashlib.sha256(password.encode()).hexdigest()
+                                    if password_hash_input == emp.get("password_hash"):
+                                        if not emp.get("es_activo", False):
+                                            st.error("❌ Tu cuenta ha sido desactivada. Contacta al administrador.")
+                                            st.stop()
+                                        empleado_data = emp
+                                        es_admin = False
+                            except Exception as e:
+                                st.error(f"Error técnico al consultar empleados: {e}")
+                        
+                        # 3. Resultado de validación
+                        if not user_auth and not empleado_data:
+                            st.error("❌ Correo o contraseña incorrectos")
+                        
+                        # 4. Procesar Sesión
+                        else:
+                            if es_admin:
+                                usuario_id = user_auth.id
+                                try:
+                                    resp_dep = conn.table("usuarios_dependientes").select("owner_id").eq("id", usuario_id).execute()
+                                    owner_id = resp_dep.data[0]['owner_id'] if resp_dep.data else usuario_id
+                                except:
+                                    owner_id = usuario_id
+                                
+                                permitido, error_msg, token = gestionar_sesion_saas(owner_id, usuario_id, conn)
+                                
+                                if permitido:
+                                    st.session_state.owner_id = owner_id
+                                    st.session_state.rol = "admin"
+                                    st.session_state.user = user_auth
+                                    st.session_state.session_token = token
+                                    st.session_state.authenticated = True
+                                    st.rerun()
+                                else:
+                                    st.error(f"🚫 {error_msg}")
+                            
+                            else: # Es un empleado
+                                owner_id = empleado_data['owner_id']
+                                usuario_id = empleado_data['id']
+                                
+                                permitido, error_msg, token = gestionar_sesion_saas(owner_id, usuario_id, conn)
+                                
+                                if permitido:
+                                    st.session_state.empleado_id = usuario_id
+                                    st.session_state.owner_id = owner_id
+                                    st.session_state.rol = empleado_data.get('rol', 'empleado')
+                                    st.session_state.nombre_empleado = empleado_data.get('nombre', '')
+                                    
+                                    class EmpleadoUser:
+                                        def __init__(self, owner_id, email):
+                                            self.id = owner_id
+                                            self.email = email
+                                            self.user_metadata = {'rol': 'empleado'}
+                                    
+                                    st.session_state.user = EmpleadoUser(owner_id, email)
+                                    st.session_state.session_token = token
+                                    st.session_state.authenticated = True
+                                    st.rerun()
+                                else:
+                                    st.error(f"🚫 {error_msg}")
+                    else:
+                        st.warning("Por favor, completa todos los campos")
 
                         
             # --- VISTA: REGISTRO ---
