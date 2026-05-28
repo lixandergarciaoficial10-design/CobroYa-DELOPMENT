@@ -36,59 +36,26 @@ if "datos_ruta_consultados" not in st.session_state:
     st.session_state.datos_ruta_consultados = []
 
 def gestionar_sesion_saas(owner_id, usuario_id, conn):
-    print(f"DEBUG: Iniciando gestionar_sesion_saas para owner: {owner_id}, user: {usuario_id}")
+    print(f"DEBUG: Llamando al RPC para gestionar sesión: owner {owner_id}")
     try:
-        ahora = datetime.now(timezone.utc)
-        
-        # 1. Limpieza (Protegida para que un fallo aquí no bloquee el login)
-        try:
-            conn.table("sesiones_activas").delete().lt("expires_at", ahora.isoformat()).execute()
-        except Exception as e:
-            print(f"DEBUG: Error al limpiar sesiones antiguas (no crítico): {e}")
-        
-        # 2. Obtener límite
-        res_conf = conn.table("configuracion").select("limite_sesiones_actual").eq("user_id", owner_id).execute()
-        limite = res_conf.data[0].get("limite_sesiones_actual", 2) if res_conf.data else 2
-        
-        # 3. Contar activas
-        res_count = conn.table("sesiones_activas").select("id", count="exact").eq("owner_id", owner_id).execute()
-        activas = res_count.count if res_count.count is not None else 0
-        
-        if activas >= limite:
-            return False, f"Límite de {limite} sesiones alcanzado.", None
-            
-        # 4. Insertar nueva sesión (CON TODOS LOS CAMPOS OBLIGATORIOS)
-        token = str(uuid.uuid4())
-        session_id = str(uuid.uuid4()) # ID obligatorio generado desde Python
-        expiracion = (ahora + timedelta(minutes=20)).isoformat()
-        
-        datos_sesion = {
-            "id": session_id,
-            "owner_id": str(owner_id), 
-            "usuario_id": str(usuario_id),
-            "session_token": token, 
-            "last_activity": ahora.isoformat(), 
-            "expires_at": expiracion,
-            "created_at": ahora.isoformat() # Campo obligatorio
-        }
-        
-        print(f"DEBUG: Intentando insertar sesión: {datos_sesion}")
-        
-        # 5. Ejecución
-        # En la librería actual, si hay problemas de permisos o de esquema, el código saltará al 'except'
-        res_insert = conn.table("sesiones_activas").insert(datos_sesion).execute()
-        
-        if res_insert.data:
-            print("DEBUG: Inserción exitosa.")
-            return True, "Acceso concedido", token
+        # Ejecutamos el RPC
+        res = conn.rpc("registrar_sesion_cobroya", {
+            "p_owner_id": str(owner_id), 
+            "p_usuario_id": str(usuario_id)
+        }).execute()
+
+        # res.data es una lista, ej: [{'success': True, 'token': '...'}]
+        if res.data and res.data[0].get("success"):
+            token_real = res.data[0].get("token")
+            print(f"DEBUG: Acceso concedido. Token: {token_real}")
+            return True, "Acceso concedido", token_real
         else:
-            print(f"DEBUG: Respuesta vacía de Supabase: {res_insert}")
-            return False, "Error: Supabase no devolvió confirmación.", None
-            
+            print("DEBUG: Límite alcanzado según RPC.")
+            return False, "Límite de sesiones alcanzado.", None
+
     except Exception as e:
-        # Aquí caerán todos los errores reales (RLS, permisos, tipos de datos, etc.)
-        print(f"DEBUG: EXCEPCIÓN FATAL EN BD: {str(e)}")
-        return False, f"Error técnico en BD: {str(e)}", None
+        print(f"DEBUG: EXCEPCIÓN EN RPC: {str(e)}")
+        return False, f"Error de conexión: {str(e)}", None
         
 def renovar_actividad_saas(token, conn):
     if not token: return
