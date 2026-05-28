@@ -39,7 +39,7 @@ def gestionar_sesion_saas(owner_id, usuario_id, conn):
     try:
         ahora = datetime.now(timezone.utc)
         
-        # 1. Limpieza
+        # 1. Limpieza 
         conn.table("sesiones_activas").delete().lt("expires_at", ahora.isoformat()).execute()
         
         # 2. Buscar el límite
@@ -50,7 +50,7 @@ def gestionar_sesion_saas(owner_id, usuario_id, conn):
         res_count = conn.table("sesiones_activas").select("id", count="exact").eq("owner_id", owner_id).execute()
         activas = res_count.count if res_count.count else 0
         
-        # 4. ¿Hay cupo?
+        # 4. Bloqueo por límite
         if activas >= limite:
             return False, f"Límite de {limite} sesiones alcanzado para esta cuenta.", None
             
@@ -66,17 +66,14 @@ def gestionar_sesion_saas(owner_id, usuario_id, conn):
             "expires_at": expiracion
         }).execute()
         
-        # VERIFICACIÓN FORZADA: Si Supabase no devuelve data, no se guardó.
+        # SI SUPABASE LO IGNORA POR SEGURIDAD (RLS)
         if not res_insert.data:
-            st.error("🚨 Supabase ignoró el guardado. Revisa si el RLS está activado en la tabla.")
-            return False, "Error de escritura en BD", None
-
+            return False, "Supabase bloqueó el guardado. ¡Ve a Supabase y desactiva el RLS en la tabla 'sesiones_activas'!", None
+            
         return True, "Acceso concedido", token
-
+        
     except Exception as e:
-        # Esto te mostrará el error en la cara en rojo gigante
-        st.error(f"❌ ERROR CRÍTICO DE BD: {str(e)}")
-        st.stop() # Congelamos la app para que puedas leer el error
+        return False, f"Error técnico en base de datos: {str(e)}", None
         
 def renovar_actividad_saas(token, conn):
     if not token: return
@@ -293,99 +290,94 @@ if not st.session_state.authenticated:
                     if st.button("¿Olvidaste tu contraseña?", key="btn_forgot"):
                         st.session_state.page = "forgot"
                         st.rerun()
-
 # --- LÓGICA DE INICIO DE SESIÓN CORREGIDA (Lixander Edition - Blindada) ---
                 if st.button("Iniciar sesión", type="primary", use_container_width=True):
                     if email and password:
-                        login_exitoso = False
+                        user_auth = None
+                        empleado_data = None
+                        es_admin = False
                         
-                        # 1. Intentamos entrar con Supabase Auth normal
+                        # 1. Intentamos Auth de Supabase (Admin)
                         try:
                             res = conn.auth.sign_in_with_password({"email": email, "password": password})
-                            
                             if res and res.user:
-                                usuario_id = res.user.id
-                                
-                                # 2. Determinamos Rol y quién es el Dueño (Owner)
-                                try:
-                                    resp_dep = conn.table("usuarios_dependientes").select("owner_id").eq("id", usuario_id).execute()
-                                    if resp_dep.data:
-                                        st.session_state.owner_id = resp_dep.data[0]['owner_id']
-                                        st.session_state.rol = "cobrador"
-                                    else:
-                                        st.session_state.owner_id = usuario_id
-                                        st.session_state.rol = "admin"
-                                except:
-                                    st.session_state.owner_id = usuario_id
-                                    st.session_state.rol = "admin"
-
-                                # --- 🛡️ GESTIÓN PROFESIONAL DE SESIÓN (SaaS) ---
-                                permitido, error_msg, token = gestionar_sesion_saas(st.session_state.owner_id, usuario_id, conn)
-                                if not permitido:
-                                    st.error(f"🚫 {error_msg}")
-                                    st.stop()
-                                
-                                # Guardamos el token para renovarlo en cada clic
-                                st.session_state.session_token = token
-                                # -----------------------------------------------
-
-                                # 3. Entramos a la App
-                                st.session_state.user = res.user
-                                st.session_state.authenticated = True
-                                login_exitoso = True
-                                st.success("¡Bienvenido a CobroYa!")
-                                st.rerun()
-                                
-                        except Exception as e:
-                            login_exitoso = False
+                                user_auth = res.user
+                                es_admin = True
+                        except Exception:
+                            pass
                         
-                        # Solo si el login con Auth falló, intentamos con empleados (Tabla Manual)
-                        if not login_exitoso:
+                        # 2. Si el Auth falló, intentamos con empleados (Tabla Manual)
+                        if not user_auth:
                             try:
                                 import hashlib
-                                resp_emp = conn.table("usuarios_dependientes").select("id, password_hash, owner_id, rol, es_activo, nombre").eq("email", email).execute()
-                                
+                                resp_emp = conn.table("usuarios_dependientes").select("*").eq("email", email).execute()
                                 if resp_emp.data:
-                                    empleado = resp_emp.data[0]
-                                    if not empleado.get("es_activo", False):
-                                        st.error("❌ Tu cuenta ha sido desactivada. Contacta al administrador.")
-                                    else:
-                                        password_hash_input = hashlib.sha256(password.encode()).hexdigest()
-                                        if password_hash_input == empleado.get("password_hash"):
-                                            
-                                            # --- 🛡️ GESTIÓN PROFESIONAL DE SESIÓN (EMPLEADO) ---
-                                            permitido, error_msg, token = gestionar_sesion_saas(empleado['owner_id'], empleado['id'], conn)
-                                            if not permitido:
-                                                st.error(f"🚫 {error_msg}")
-                                                st.stop()
-                                            
-                                            st.session_state.session_token = token
-                                            # ---------------------------------------------------
-                                            
-                                            st.session_state.empleado_id = empleado['id']
-                                            st.session_state.owner_id = empleado['owner_id']
-                                            st.session_state.rol = empleado.get('rol', 'empleado')
-                                            st.session_state.nombre_empleado = empleado.get('nombre', '')
-                                            
-                                            class EmpleadoUser:
-                                                def __init__(self, owner_id, email):
-                                                    self.id = owner_id
-                                                    self.email = email
-                                                    self.user_metadata = {'rol': 'empleado'}
-                                            
-                                            st.session_state.user = EmpleadoUser(empleado['owner_id'], email)
-                                            st.session_state.authenticated = True
-                                            login_exitoso = True
-                                            st.success("¡Bienvenido a CobroYa!")
-                                            st.rerun()
-                                        else:
-                                            st.error("❌ Correo o contraseña incorrectos")
-                                else:
-                                    st.error("❌ Correo o contraseña incorrectos")
+                                    emp = resp_emp.data[0]
+                                    password_hash_input = hashlib.sha256(password.encode()).hexdigest()
+                                    if password_hash_input == emp.get("password_hash"):
+                                        if not emp.get("es_activo", False):
+                                            st.error("❌ Tu cuenta ha sido desactivada. Contacta al administrador.")
+                                            st.stop()
+                                        empleado_data = emp
+                                        es_admin = False
                             except Exception as e:
-                                st.error("❌ Correo o contraseña incorrectos")
+                                st.error(f"Error técnico al consultar empleados: {e}")
+                        
+                        # 3. Resultado de validación
+                        if not user_auth and not empleado_data:
+                            st.error("❌ Correo o contraseña incorrectos")
+                        
+                        # 4. Procesar Sesión (Si las credenciales son correctas)
+                        else:
+                            if es_admin:
+                                usuario_id = user_auth.id
+                                try:
+                                    resp_dep = conn.table("usuarios_dependientes").select("owner_id").eq("id", usuario_id).execute()
+                                    owner_id = resp_dep.data[0]['owner_id'] if resp_dep.data else usuario_id
+                                except:
+                                    owner_id = usuario_id
+                                
+                                permitido, error_msg, token = gestionar_sesion_saas(owner_id, usuario_id, conn)
+                                
+                                if permitido:
+                                    st.session_state.owner_id = owner_id
+                                    st.session_state.rol = "admin"
+                                    st.session_state.user = user_auth
+                                    st.session_state.session_token = token
+                                    st.session_state.authenticated = True
+                                    st.success("¡Bienvenido a CobroYa!")
+                                    st.rerun()
+                                else:
+                                    st.error(f"🚫 {error_msg}")
+                            
+                            else: # Es un empleado
+                                owner_id = empleado_data['owner_id']
+                                usuario_id = empleado_data['id']
+                                
+                                permitido, error_msg, token = gestionar_sesion_saas(owner_id, usuario_id, conn)
+                                
+                                if permitido:
+                                    st.session_state.empleado_id = usuario_id
+                                    st.session_state.owner_id = owner_id
+                                    st.session_state.rol = empleado_data.get('rol', 'empleado')
+                                    st.session_state.nombre_empleado = empleado_data.get('nombre', '')
+                                    
+                                    class EmpleadoUser:
+                                        def __init__(self, owner_id, email):
+                                            self.id = owner_id
+                                            self.email = email
+                                            self.user_metadata = {'rol': 'empleado'}
+                                    
+                                    st.session_state.user = EmpleadoUser(owner_id, email)
+                                    st.session_state.session_token = token
+                                    st.session_state.authenticated = True
+                                    st.success("¡Bienvenido a CobroYa!")
+                                    st.rerun()
+                                else:
+                                    st.error(f"🚫 {error_msg}")
                     else:
                         st.warning("Por favor, completa todos los campos")
+
                         
             # --- VISTA: REGISTRO ---
             elif st.session_state.page == "signup":
