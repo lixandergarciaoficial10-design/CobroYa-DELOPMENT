@@ -39,7 +39,7 @@ def gestionar_sesion_saas(owner_id, usuario_id, conn):
     try:
         ahora = datetime.now(timezone.utc)
         
-        # 1. Limpieza (Si esto falla, verás el error en pantalla)
+        # 1. Limpieza
         conn.table("sesiones_activas").delete().lt("expires_at", ahora.isoformat()).execute()
         
         # 2. Buscar el límite
@@ -58,21 +58,26 @@ def gestionar_sesion_saas(owner_id, usuario_id, conn):
         token = str(uuid.uuid4())
         expiracion = (ahora + timedelta(minutes=20)).isoformat()
         
-        # ¡OJO! Si falla aquí, el error aparecerá en el st.error del except
-        conn.table("sesiones_activas").insert({
-            "owner_id": owner_id, 
-            "usuario_id": usuario_id,
+        res_insert = conn.table("sesiones_activas").insert({
+            "owner_id": str(owner_id), 
+            "usuario_id": str(usuario_id),
             "session_token": token, 
             "last_activity": ahora.isoformat(), 
             "expires_at": expiracion
         }).execute()
         
-        return True, "Acceso concedido", token
-    except Exception as e:
-        # Esto te dirá el "maldito problema" real
-        st.error(f"❌ ERROR CRÍTICO DE BASE DE DATOS: {str(e)}")
-        return False, f"Error técnico: {str(e)}", None
+        # VERIFICACIÓN FORZADA: Si Supabase no devuelve data, no se guardó.
+        if not res_insert.data:
+            st.error("🚨 Supabase ignoró el guardado. Revisa si el RLS está activado en la tabla.")
+            return False, "Error de escritura en BD", None
 
+        return True, "Acceso concedido", token
+
+    except Exception as e:
+        # Esto te mostrará el error en la cara en rojo gigante
+        st.error(f"❌ ERROR CRÍTICO DE BD: {str(e)}")
+        st.stop() # Congelamos la app para que puedas leer el error
+        
 def renovar_actividad_saas(token, conn):
     if not token: return
     try:
@@ -289,8 +294,8 @@ if not st.session_state.authenticated:
                         st.session_state.page = "forgot"
                         st.rerun()
 
- # --- LÓGICA DE INICIO DE SESIÓN CORREGIDA (Lixander Edition - Blindada) ---
-               if st.button("Iniciar sesión", type="primary", use_container_width=True):
+# --- LÓGICA DE INICIO DE SESIÓN CORREGIDA (Lixander Edition - Blindada) ---
+                if st.button("Iniciar sesión", type="primary", use_container_width=True):
                     if email and password:
                         login_exitoso = False
                         
