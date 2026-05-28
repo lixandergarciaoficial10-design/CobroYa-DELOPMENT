@@ -39,10 +39,10 @@ def gestionar_sesion_saas(owner_id, usuario_id, conn):
     try:
         ahora = datetime.now(timezone.utc)
         
-        # 1. Limpieza 
+        # 1. Limpieza
         conn.table("sesiones_activas").delete().lt("expires_at", ahora.isoformat()).execute()
         
-        # 2. Buscar el límite
+        # 2. Buscar límite
         res_conf = conn.table("configuracion").select("limite_sesiones_actual").eq("user_id", owner_id).execute()
         limite = res_conf.data[0].get("limite_sesiones_actual", 2) if res_conf.data else 2
         
@@ -50,30 +50,33 @@ def gestionar_sesion_saas(owner_id, usuario_id, conn):
         res_count = conn.table("sesiones_activas").select("id", count="exact").eq("owner_id", owner_id).execute()
         activas = res_count.count if res_count.count else 0
         
-        # 4. Bloqueo por límite
         if activas >= limite:
-            return False, f"Límite de {limite} sesiones alcanzado para esta cuenta.", None
+            return False, f"Límite de {limite} sesiones alcanzado.", None
             
-        # 5. Intentar Insertar
+        # 4. Inserción con DEPURACIÓN
         token = str(uuid.uuid4())
         expiracion = (ahora + timedelta(minutes=20)).isoformat()
-        
-        res_insert = conn.table("sesiones_activas").insert({
+        datos_sesion = {
             "owner_id": str(owner_id), 
             "usuario_id": str(usuario_id),
             "session_token": token, 
             "last_activity": ahora.isoformat(), 
             "expires_at": expiracion
-        }).execute()
+        }
         
-        # SI SUPABASE LO IGNORA POR SEGURIDAD (RLS)
+        # Intentamos insertar
+        res_insert = conn.table("sesiones_activas").insert(datos_sesion).execute()
+        
+        # SI LA RESPUESTA ESTÁ VACÍA, AQUÍ VEREMOS EL PORQUÉ EN LA TERMINAL
         if not res_insert.data:
-            return False, "Supabase bloqueó el guardado. ¡Ve a Supabase y desactiva el RLS en la tabla 'sesiones_activas'!", None
+            print(f"DEBUG: Supabase rechazó la inserción. Respuesta: {res_insert}")
+            return False, "Error al guardar sesión: Supabase rechazó la entrada.", None
             
         return True, "Acceso concedido", token
         
     except Exception as e:
-        return False, f"Error técnico en base de datos: {str(e)}", None
+        print(f"DEBUG EXCEPCIÓN: {str(e)}")
+        return False, f"Error crítico: {str(e)}", None
         
 def renovar_actividad_saas(token, conn):
     if not token: return
