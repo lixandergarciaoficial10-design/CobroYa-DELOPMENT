@@ -19,8 +19,6 @@ from fpdf import FPDF
 from datetime import datetime
 import streamlit as st
 import re
-import uuid
-from datetime import datetime, timedelta, timezone
 from st_supabase_connection import SupabaseConnection
 
 # --- INICIALIZACIÓN DE VARIABLES PARA EL MAPA ---
@@ -35,37 +33,8 @@ if "consulta_activa" not in st.session_state:
 if "datos_ruta_consultados" not in st.session_state:
     st.session_state.datos_ruta_consultados = []
 
-def gestionar_sesion_saas(owner_id, usuario_id, conn):
-    print(f"DEBUG: Llamando al RPC para gestionar sesión: owner {owner_id}")
-    try:
-        # Ejecutamos el RPC
-        res = conn.rpc("registrar_sesion_cobroya", {
-            "p_owner_id": str(owner_id), 
-            "p_usuario_id": str(usuario_id)
-        }).execute()
-
-        # res.data es una lista, ej: [{'success': True, 'token': '...'}]
-        if res.data and res.data[0].get("success"):
-            token_real = res.data[0].get("token")
-            print(f"DEBUG: Acceso concedido. Token: {token_real}")
-            return True, "Acceso concedido", token_real
-        else:
-            print("DEBUG: Límite alcanzado según RPC.")
-            return False, "Límite de sesiones alcanzado.", None
-
-    except Exception as e:
-        print(f"DEBUG: EXCEPCIÓN EN RPC: {str(e)}")
-        return False, f"Error de conexión: {str(e)}", None
-        
-def renovar_actividad_saas(token, conn):
-    if not token: return
-    try:
-        ahora = datetime.now(timezone.utc)
-        nueva_exp = (ahora + timedelta(minutes=20)).isoformat()
-        conn.table("sesiones_activas").update({
-            "last_activity": ahora.isoformat(), "expires_at": nueva_exp
-        }).eq("session_token", token).execute()
-    except: pass
+import streamlit as st
+from st_supabase_connection import SupabaseConnection
 
 # 1. CONFIGURACIÓN INICIAL Y CONEXIÓN
 st.set_page_config(
@@ -272,93 +241,92 @@ if not st.session_state.authenticated:
                     if st.button("¿Olvidaste tu contraseña?", key="btn_forgot"):
                         st.session_state.page = "forgot"
                         st.rerun()
-                        
-# --- LÓGICA DE INICIO DE SESIÓN CORREGIDA (Lixander Edition - Blindada) ---
-                if st.button("Iniciar sesión", type="primary"):
+                
+# --- LÓGICA DE INICIO DE SESIÓN CORREGIDA (Lixander Edition) ---
+                if st.button("Iniciar sesión", type="primary", use_container_width=True):
                     if email and password:
-                        user_auth = None
-                        empleado_data = None
-                        es_admin = False
+                        login_exitoso = False
                         
-                        # 1. Intentamos Auth de Supabase (Admin)
+                        # 1. Intentamos entrar con Supabase Auth normal
                         try:
                             res = conn.auth.sign_in_with_password({"email": email, "password": password})
+                            
                             if res and res.user:
-                                user_auth = res.user
-                                es_admin = True
-                        except Exception:
-                            pass
-                        
-                        # 2. Si el Auth falló, intentamos con empleados (Tabla Manual)
-                        if not user_auth:
-                            try:
-                                import hashlib
-                                resp_emp = conn.table("usuarios_dependientes").select("*").eq("email", email).execute()
-                                if resp_emp.data:
-                                    emp = resp_emp.data[0]
-                                    password_hash_input = hashlib.sha256(password.encode()).hexdigest()
-                                    if password_hash_input == emp.get("password_hash"):
-                                        if not emp.get("es_activo", False):
-                                            st.error("❌ Tu cuenta ha sido desactivada. Contacta al administrador.")
-                                            st.stop()
-                                        empleado_data = emp
-                                        es_admin = False
-                            except Exception as e:
-                                st.error(f"Error técnico al consultar empleados: {e}")
-                        
-                        # 3. Resultado de validación
-                        if not user_auth and not empleado_data:
-                            st.error("❌ Correo o contraseña incorrectos")
-                        
-                        # 4. Procesar Sesión
-                        else:
-                            if es_admin:
-                                usuario_id = user_auth.id
+                                usuario_id = res.user.id
+                                
+                                # 2. Verificamos si existe la tabla de dependientes (solo si ya la creaste)
+                                # Si da error porque la tabla no existe, el 'except' nos salvará y te dejará entrar.
                                 try:
                                     resp_dep = conn.table("usuarios_dependientes").select("owner_id").eq("id", usuario_id).execute()
-                                    owner_id = resp_dep.data[0]['owner_id'] if resp_dep.data else usuario_id
+                                    
+                                    if resp_dep.data:
+                                        # Es un cobrador creado por un administrador
+                                        st.session_state.owner_id = resp_dep.data[0]['owner_id']
+                                        st.session_state.rol = "cobrador"
+                                    else:
+                                        # Es el dueño/administrador principal
+                                        st.session_state.owner_id = usuario_id
+                                        st.session_state.rol = "admin"
                                 except:
-                                    owner_id = usuario_id
-                                
-                                permitido, error_msg, token = gestionar_sesion_saas(owner_id, usuario_id, conn)
-                                
-                                if permitido:
-                                    st.session_state.owner_id = owner_id
+                                    # Si la tabla no existe aún, entras como Admin por defecto
+                                    st.session_state.owner_id = usuario_id
                                     st.session_state.rol = "admin"
-                                    st.session_state.user = user_auth
-                                    st.session_state.session_token = token
-                                    st.session_state.authenticated = True
-                                    st.rerun()
-                                else:
-                                    st.error(f"🚫 {error_msg}")
-                            
-                            else: # Es un empleado
-                                owner_id = empleado_data['owner_id']
-                                usuario_id = empleado_data['id']
+
+                                # 3. Entramos a la App
+                                st.session_state.user = res.user
+                                st.session_state.authenticated = True
+                                login_exitoso = True
+                                st.success("¡Bienvenido a CobroYa!")
+                                st.rerun()
                                 
-                                permitido, error_msg, token = gestionar_sesion_saas(owner_id, usuario_id, conn)
+                        except Exception as e:
+                            # Auth de Supabase falló, intentamos con empleados
+                            login_exitoso = False
+                        
+                        # Solo si el login con Auth falló, intentamos con empleados
+                        if not login_exitoso:
+                            try:
+                                import hashlib
+                                resp_emp = conn.table("usuarios_dependientes").select("id, password_hash, owner_id, rol, es_activo, nombre").eq("email", email).execute()
                                 
-                                if permitido:
-                                    st.session_state.empleado_id = usuario_id
-                                    st.session_state.owner_id = owner_id
-                                    st.session_state.rol = empleado_data.get('rol', 'empleado')
-                                    st.session_state.nombre_empleado = empleado_data.get('nombre', '')
-                                    
-                                    class EmpleadoUser:
-                                        def __init__(self, owner_id, email):
-                                            self.id = owner_id
-                                            self.email = email
-                                            self.user_metadata = {'rol': 'empleado'}
-                                    
-                                    st.session_state.user = EmpleadoUser(owner_id, email)
-                                    st.session_state.session_token = token
-                                    st.session_state.authenticated = True
-                                    st.rerun()
+                                if resp_emp.data:
+                                    empleado = resp_emp.data[0]
+                                    if not empleado.get("es_activo", False):
+                                        st.error("❌ Tu cuenta ha sido desactivada. Contacta al administrador.")
+                                    else:
+                                        password_hash_input = hashlib.sha256(password.encode()).hexdigest()
+                                        if password_hash_input == empleado.get("password_hash"):
+                                            # ✅ Empleado autenticado correctamente
+                                            # Guardamos datos del empleado en sesión
+                                            st.session_state.empleado_id = empleado['id']
+                                            st.session_state.owner_id = empleado['owner_id']
+                                            st.session_state.rol = empleado.get('rol', 'empleado')
+                                            st.session_state.nombre_empleado = empleado.get('nombre', '')
+                                            # Usamos el owner_id como user.id para que todo funcione como antes
+                                            class EmpleadoUser:
+                                                def __init__(self, owner_id, email):
+                                                    self.id = owner_id
+                                                    self.email = email
+                                                    self.user_metadata = {'rol': 'empleado'}
+                                            st.session_state.user = EmpleadoUser(empleado['owner_id'], email)
+                                            st.session_state.authenticated = True
+                                            login_exitoso = True
+                                            st.success("¡Bienvenido a CobroYa!")
+                                            st.rerun()
+                                        else:
+                                            st.error("❌ Correo o contraseña incorrectos")
                                 else:
-                                    st.error(f"🚫 {error_msg}")
+                                    st.error("❌ Correo o contraseña incorrectos")
+                            except Exception as e:
+                                st.error("❌ Correo o contraseña incorrectos")
                     else:
                         st.warning("Por favor, completa todos los campos")
-
+                
+                st.write("")
+                st.markdown('<div style="text-align: center; font-size: 14px; color: #64748B;">¿No tienes cuenta?</div>', unsafe_allow_html=True)
+                if st.button("Crear cuenta nueva", key="btn_signup_nav", use_container_width=True):
+                    st.session_state.page = "signup"
+                    st.rerun()
                         
             # --- VISTA: REGISTRO ---
             elif st.session_state.page == "signup":
@@ -457,33 +425,7 @@ if not st.session_state.authenticated:
     st.stop()
 
 # --- SI PASA DE AQUÍ, EL USUARIO ESTÁ DENTRO ---
-# RENOVAMOS LA SESIÓN EN CADA CLIC
-renovar_actividad_saas(st.session_state.get("session_token"), conn)
 u_id = st.session_state.user.id
-
-# --- 🛡️ FILTRO DE MIGRACIÓN PARA USUARIOS YA LOGUEADOS ---
-# Si el usuario ya está autenticado pero NO tiene un token de sesión (usuarios viejos)
-if st.session_state.get("authenticated") and "session_token" not in st.session_state:
-    # Intentamos registrar su sesión automáticamente
-    u_id_actual = st.session_state.user.id
-    o_id_actual = st.session_state.owner_id
-    
-    permitido, mensaje, token = gestionar_sesion_saas(o_id_actual, u_id_actual, conn)
-    
-    if permitido:
-        # Se le asigna su token y puede seguir trabajando
-        st.session_state.session_token = token
-    else:
-        # Si el cupo está lleno, lo sacamos para que respete el límite
-        st.session_state.clear()
-        st.error(f"Sincronizando seguridad: {mensaje}")
-        st.info("Por favor, inicia sesión nuevamente.")
-        st.stop()
-
-# Si ya tiene token, simplemente renovamos su actividad
-if st.session_state.get("session_token"):
-    renovar_actividad_saas(st.session_state.session_token, conn)
-# -------------------------------------------------------
 
 import urllib.parse
 from datetime import datetime
