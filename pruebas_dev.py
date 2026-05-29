@@ -24,7 +24,7 @@ from datetime import datetime, timedelta, timezone
 from st_supabase_connection import SupabaseConnection
 
 # --- INICIALIZACIÓN DE VARIABLES PARA EL MAPA ---
- if "mostrar_mapa" not in st.session_state:
+if "mostrar_mapa" not in st.session_state:
     st.session_state.mostrar_mapa = False
 if "refresh_key" not in st.session_state:
     st.session_state.refresh_key = 0
