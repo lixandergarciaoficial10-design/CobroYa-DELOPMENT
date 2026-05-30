@@ -20,6 +20,8 @@ from datetime import datetime
 import streamlit as st
 import re
 from st_supabase_connection import SupabaseConnection
+import uuid
+from datetime import datetime, timedelta, timezone
 
 # --- INICIALIZACIÓN DE VARIABLES PARA EL MAPA ---
 if "mostrar_mapa" not in st.session_state:
@@ -43,7 +45,7 @@ st.set_page_config(
     layout="wide", 
     initial_sidebar_state="collapsed"
 )
-
+    
 # LIMPIEZA VISUAL (SIN TOCAR EL MENÚ DE HAMBURGUESA)
 st.markdown("""
     <style>
@@ -64,6 +66,74 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 conn = st.connection("supabase", type=SupabaseConnection)
+
+# --- 1. EL PORTERO (Para iniciar sesión) ---
+def iniciar_sesion_robusta(owner_id, usuario_id, limite_permitido, conn):
+    """Verifica si hay cupo y crea la sesión si se puede."""
+    
+    # a. Consultar cuántos están vivos AHORA usando la vista que creamos
+    res_vivos = conn.table("vista_monitoreo_sesiones").select("dispositivos_conectados").eq("owner_id", str(owner_id)).execute()
+    
+    conectados_actuales = 0
+    if res_vivos.data:
+        conectados_actuales = res_vivos.data[0]['dispositivos_conectados']
+        
+    # b. ¿Supera el límite?
+    if conectados_actuales >= limite_permitido:
+        return False, f"Límite alcanzado. Tienes {conectados_actuales}/{limite_permitido} dispositivos conectados.", None
+        
+    # c. Hay espacio, creamos la sesión (Duración: 5 MINUTOS)
+    nuevo_token = str(uuid.uuid4())
+    ahora = datetime.now(timezone.utc)
+    expira = ahora + timedelta(minutes=5)
+    
+    datos_sesion = {
+        "owner_id": str(owner_id),
+        "usuario_id": str(usuario_id),
+        "session_token": nuevo_token,
+        "created_at": ahora.isoformat(),
+        "last_activity": ahora.isoformat(),
+        "expires_at": expira.isoformat()
+    }
+    
+    try:
+        conn.table("sesiones_activas").insert(datos_sesion).execute()
+        return True, "Acceso concedido", nuevo_token
+    except Exception as e:
+        return False, f"Error del servidor: {e}", None
+
+
+# --- 2. EL LATIDO (Para mantener la sesión viva) ---
+def latido_sesion(token_actual, conn):
+    """Actualiza la fecha de expiración 5 minutos más si el usuario hace clic en algo."""
+    if not token_actual:
+        return
+        
+    ahora = datetime.now(timezone.utc)
+    nueva_expiracion = ahora + timedelta(minutes=5)
+    
+    try:
+        # Buscamos la sesión por su token y le damos 5 minutos más de vida
+        conn.table("sesiones_activas").update({
+            "last_activity": ahora.isoformat(),
+            "expires_at": nueva_expiracion.isoformat()
+        }).eq("session_token", token_actual).execute()
+    except:
+        pass # Si falla (ej. sin internet temporal), no rompemos la app
+
+
+# --- 3. EL BOTÓN DE PÁNICO (Logout explícito) ---
+def destruir_sesion(token_actual, conn):
+    """Si el usuario le da a Cerrar Sesión, borramos el registro inmediatamente."""
+    if not token_actual:
+        return
+    try:
+        conn.table("sesiones_activas").delete().eq("session_token", token_actual).execute()
+    except:
+        pass
+
+if "session_token" in st.session_state and st.session_state.get("authenticated", False):
+    latido_sesion(st.session_state.session_token, conn)
 
 # Inicializar estados de sesión
 if "authenticated" not in st.session_state:
@@ -245,46 +315,45 @@ if not st.session_state.authenticated:
 # --- LÓGICA DE INICIO DE SESIÓN CORREGIDA (Lixander Edition) ---
                 if st.button("Iniciar sesión", type="primary", use_container_width=True):
                     if email and password:
-                        login_exitoso = False
+                        credenciales_correctas = False
+                        es_admin = False
                         
-                        # 1. Intentamos entrar con Supabase Auth normal
+                        # Variables temporales para guardar datos antes del chequeo de límite
+                        usuario_id_temp = None
+                        owner_id_temp = None
+                        rol_temp = None
+                        user_auth_temp = None
+                        empleado_data_temp = None
+                        
+                        # 1. Intentamos entrar con Supabase Auth normal (Admin / Dueño)
                         try:
                             res = conn.auth.sign_in_with_password({"email": email, "password": password})
                             
                             if res and res.user:
-                                usuario_id = res.user.id
+                                usuario_id_temp = res.user.id
+                                user_auth_temp = res.user
                                 
-                                # 2. Verificamos si existe la tabla de dependientes (solo si ya la creaste)
-                                # Si da error porque la tabla no existe, el 'except' nos salvará y te dejará entrar.
+                                # Verificamos si existe la tabla de dependientes para reasignar roles
                                 try:
-                                    resp_dep = conn.table("usuarios_dependientes").select("owner_id").eq("id", usuario_id).execute()
-                                    
+                                    resp_dep = conn.table("usuarios_dependientes").select("owner_id").eq("id", usuario_id_temp).execute()
                                     if resp_dep.data:
-                                        # Es un cobrador creado por un administrador
-                                        st.session_state.owner_id = resp_dep.data[0]['owner_id']
-                                        st.session_state.rol = "cobrador"
+                                        owner_id_temp = resp_dep.data[0]['owner_id']
+                                        rol_temp = "cobrador"
                                     else:
-                                        # Es el dueño/administrador principal
-                                        st.session_state.owner_id = usuario_id
-                                        st.session_state.rol = "admin"
+                                        owner_id_temp = usuario_id_temp
+                                        rol_temp = "admin"
                                 except:
-                                    # Si la tabla no existe aún, entras como Admin por defecto
-                                    st.session_state.owner_id = usuario_id
-                                    st.session_state.rol = "admin"
-
-                                # 3. Entramos a la App
-                                st.session_state.user = res.user
-                                st.session_state.authenticated = True
-                                login_exitoso = True
-                                st.success("¡Bienvenido a CobroYa!")
-                                st.rerun()
+                                    owner_id_temp = usuario_id_temp
+                                    rol_temp = "admin"
                                 
+                                credenciales_correctas = True
+                                es_admin = True
                         except Exception as e:
-                            # Auth de Supabase falló, intentamos con empleados
-                            login_exitoso = False
+                            # Auth de Supabase falló, seguimos con el plan B (empleados)
+                            pass
                         
-                        # Solo si el login con Auth falló, intentamos con empleados
-                        if not login_exitoso:
+                        # 2. Solo si Auth falló, intentamos con tabla de empleados
+                        if not credenciales_correctas:
                             try:
                                 import hashlib
                                 resp_emp = conn.table("usuarios_dependientes").select("id, password_hash, owner_id, rol, es_activo, nombre").eq("email", email).execute()
@@ -296,29 +365,67 @@ if not st.session_state.authenticated:
                                     else:
                                         password_hash_input = hashlib.sha256(password.encode()).hexdigest()
                                         if password_hash_input == empleado.get("password_hash"):
-                                            # ✅ Empleado autenticado correctamente
-                                            # Guardamos datos del empleado en sesión
-                                            st.session_state.empleado_id = empleado['id']
-                                            st.session_state.owner_id = empleado['owner_id']
-                                            st.session_state.rol = empleado.get('rol', 'empleado')
-                                            st.session_state.nombre_empleado = empleado.get('nombre', '')
-                                            # Usamos el owner_id como user.id para que todo funcione como antes
-                                            class EmpleadoUser:
-                                                def __init__(self, owner_id, email):
-                                                    self.id = owner_id
-                                                    self.email = email
-                                                    self.user_metadata = {'rol': 'empleado'}
-                                            st.session_state.user = EmpleadoUser(empleado['owner_id'], email)
-                                            st.session_state.authenticated = True
-                                            login_exitoso = True
-                                            st.success("¡Bienvenido a CobroYa!")
-                                            st.rerun()
+                                            # ✅ Credenciales de empleado correctas
+                                            usuario_id_temp = empleado['id']
+                                            owner_id_temp = empleado['owner_id']
+                                            rol_temp = empleado.get('rol', 'empleado')
+                                            empleado_data_temp = empleado
+                                            
+                                            credenciales_correctas = True
+                                            es_admin = False
                                         else:
                                             st.error("❌ Correo o contraseña incorrectos")
                                 else:
                                     st.error("❌ Correo o contraseña incorrectos")
                             except Exception as e:
                                 st.error("❌ Correo o contraseña incorrectos")
+                        
+                        # ----------------------------------------------------------------
+                        # 3. VERIFICACIÓN DE LÍMITES DE SESIÓN (EL PORTERO)
+                        # ----------------------------------------------------------------
+                        if credenciales_correctas:
+                            # a) Buscamos el límite de este owner en configuración
+                            limite = 2 # Valor por defecto
+                            try:
+                                res_conf = conn.table("configuracion").select("limite_sesiones_actual").eq("user_id", owner_id_temp).execute()
+                                if res_conf.data and res_conf.data[0].get("limite_sesiones_actual"):
+                                    limite = res_conf.data[0]["limite_sesiones_actual"]
+                            except:
+                                pass # Si falla, usa el límite 2 por defecto
+                                
+                            # b) Llamamos a la función robusta (El Portero)
+                            permitido, mensaje, token = iniciar_sesion_robusta(owner_id_temp, usuario_id_temp, limite, conn)
+                            
+                            # c) Tomamos la decisión final
+                            if permitido:
+                                # Guardamos los datos de sesión comunes
+                                st.session_state.session_token = token
+                                st.session_state.owner_id = owner_id_temp
+                                st.session_state.rol = rol_temp
+                                st.session_state.authenticated = True
+                                
+                                # Guardamos los datos específicos según el tipo de usuario
+                                if es_admin:
+                                    st.session_state.user = user_auth_temp
+                                else:
+                                    st.session_state.empleado_id = usuario_id_temp
+                                    st.session_state.nombre_empleado = empleado_data_temp.get('nombre', '')
+                                    
+                                    # Clase simulada para mantener compatibilidad con tu código
+                                    class EmpleadoUser:
+                                        def __init__(self, owner, email_val):
+                                            self.id = owner
+                                            self.email = email_val
+                                            self.user_metadata = {'rol': 'empleado'}
+                                    st.session_state.user = EmpleadoUser(owner_id_temp, email)
+                                
+                                st.success("¡Bienvenido a CobroYa!")
+                                time.sleep(1) # Breve pausa para mostrar el mensaje verde
+                                st.rerun()
+                            else:
+                                # El portero no dejó entrar porque se alcanzó el límite
+                                st.error(f"🚫 {mensaje}")
+
                     else:
                         st.warning("Por favor, completa todos los campos")
                 
