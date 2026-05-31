@@ -67,22 +67,33 @@ st.markdown("""
 
 conn = st.connection("supabase", type=SupabaseConnection)
 
-# --- 1. EL PORTERO (Para iniciar sesión) ---
-def iniciar_sesion_robusta(owner_id, usuario_id, limite_permitido, conn):
-    """Verifica si hay cupo y crea la sesión si se puede."""
-    
-    # a. Consultar cuántos están vivos AHORA usando la vista que creamos
-    res_vivos = conn.table("vista_monitoreo_sesiones").select("dispositivos_conectados").eq("owner_id", str(owner_id)).execute()
-    
-    conectados_actuales = 0
-    if res_vivos.data:
-        conectados_actuales = res_vivos.data[0]['dispositivos_conectados']
-        
-    # b. ¿Supera el límite?
-    if conectados_actuales >= limite_permitido:
-        return False, f"Límite alcanzado. Tienes {conectados_actuales}/{limite_permitido} dispositivos conectados.", None
-        
-    # c. Hay espacio, creamos la sesión (Duración: 5 MINUTOS)
+# --- 1. EL PORTERO (Con opción de Acceso Forzado) ---
+def iniciar_sesion_robusta(owner_id, usuario_id, limite_permitido, conn, forzar=False):
+    """
+    Verifica el cupo. 
+    Si forzar=False: Bloquea si está lleno.
+    Si forzar=True: Elimina sesiones previas de este usuario para entrar.
+    """
+    # a. Consultar cuántos están vivos AHORA usando la vista
+    try:
+        res_vivos = conn.table("vista_monitoreo_sesiones").select("dispositivos_conectados").eq("owner_id", str(owner_id)).execute()
+        conectados_actuales = res_vivos.data[0]['dispositivos_conectados'] if res_vivos.data else 0
+    except:
+        conectados_actuales = 0
+
+    # b. Si está lleno y NO estamos forzando, avisamos del bloqueo
+    if conectados_actuales >= limite_permitido and not forzar:
+        return False, f"Límite alcanzado ({conectados_actuales}/{limite_permitido})", None
+
+    # c. Si el usuario decide FORZAR la entrada, limpiamos SUS sesiones previas
+    if forzar:
+        try:
+            # Borramos sesiones viejas de este usuario específico para liberar cupo
+            conn.table("sesiones_activas").delete().eq("usuario_id", str(usuario_id)).execute()
+        except:
+            pass
+
+    # d. Creamos la nueva sesión (Cupo disponible o forzado)
     nuevo_token = str(uuid.uuid4())
     ahora = datetime.now(timezone.utc)
     expira = ahora + timedelta(minutes=5)
@@ -100,40 +111,40 @@ def iniciar_sesion_robusta(owner_id, usuario_id, limite_permitido, conn):
         conn.table("sesiones_activas").insert(datos_sesion).execute()
         return True, "Acceso concedido", nuevo_token
     except Exception as e:
-        return False, f"Error del servidor: {e}", None
+        return False, f"Error de base de datos: {e}", None
 
 
-# --- 2. EL LATIDO (Para mantener la sesión viva) ---
+# --- 2. EL LATIDO (Detecta si fuiste expulsado) ---
 def latido_sesion(token_actual, conn):
-    """Actualiza la fecha de expiración 5 minutos más si el usuario hace clic en algo."""
+    """
+    Actualiza la sesión. 
+    Devuelve False si tu sesión ya no existe (porque otro dispositivo te sacó).
+    """
     if not token_actual:
-        return
+        return False
         
     ahora = datetime.now(timezone.utc)
     nueva_expiracion = ahora + timedelta(minutes=5)
     
     try:
-        # Buscamos la sesión por su token y le damos 5 minutos más de vida
-        conn.table("sesiones_activas").update({
+        # Intentamos actualizar la actividad
+        res = conn.table("sesiones_activas").update({
             "last_activity": ahora.isoformat(),
             "expires_at": nueva_expiracion.isoformat()
         }).eq("session_token", token_actual).execute()
+        
+        # Si res.data está vacío, significa que tu registro fue borrado (te expulsaron)
+        return len(res.data) > 0
     except:
-        pass # Si falla (ej. sin internet temporal), no rompemos la app
+        return True # Por seguridad, si falla el internet no te sacamos
 
 
-# --- 3. EL BOTÓN DE PÁNICO (Logout explícito) ---
+# --- 3. EL BOTÓN DE PÁNICO (Logout) ---
 def destruir_sesion(token_actual, conn):
-    """Si el usuario le da a Cerrar Sesión, borramos el registro inmediatamente."""
-    if not token_actual:
-        return
+    if not token_actual: return
     try:
         conn.table("sesiones_activas").delete().eq("session_token", token_actual).execute()
-    except:
-        pass
-
-if "session_token" in st.session_state and st.session_state.get("authenticated", False):
-    latido_sesion(st.session_state.session_token, conn)
+    except: pass
 
 # Inicializar estados de sesión
 if "authenticated" not in st.session_state:
@@ -313,6 +324,7 @@ if not st.session_state.authenticated:
                         st.rerun()
                 
 # --- LÓGICA DE INICIO DE SESIÓN CORREGIDA (Lixander Edition) ---
+                # --- LÓGICA DE INICIO DE SESIÓN CORREGIDA (Lixander Edition) ---
                 if st.button("Iniciar sesión", type="primary", use_container_width=True):
                     if email and password:
                         credenciales_correctas = False
@@ -393,25 +405,21 @@ if not st.session_state.authenticated:
                             except:
                                 pass # Si falla, usa el límite 2 por defecto
                                 
-                            # b) Llamamos a la función robusta (El Portero)
-                            permitido, mensaje, token = iniciar_sesion_robusta(owner_id_temp, usuario_id_temp, limite, conn)
+                            # b) Intentamos entrada normal (forzar=False)
+                            permitido, mensaje, token = iniciar_sesion_robusta(owner_id_temp, usuario_id_temp, limite, conn, forzar=False)
                             
-                            # c) Tomamos la decisión final
+                            # c) Si está permitido, entramos directo
                             if permitido:
-                                # Guardamos los datos de sesión comunes
                                 st.session_state.session_token = token
                                 st.session_state.owner_id = owner_id_temp
                                 st.session_state.rol = rol_temp
                                 st.session_state.authenticated = True
                                 
-                                # Guardamos los datos específicos según el tipo de usuario
                                 if es_admin:
                                     st.session_state.user = user_auth_temp
                                 else:
                                     st.session_state.empleado_id = usuario_id_temp
                                     st.session_state.nombre_empleado = empleado_data_temp.get('nombre', '')
-                                    
-                                    # Clase simulada para mantener compatibilidad con tu código
                                     class EmpleadoUser:
                                         def __init__(self, owner, email_val):
                                             self.id = owner
@@ -420,11 +428,38 @@ if not st.session_state.authenticated:
                                     st.session_state.user = EmpleadoUser(owner_id_temp, email)
                                 
                                 st.success("¡Bienvenido a CobroYa!")
-                                time.sleep(1) # Breve pausa para mostrar el mensaje verde
+                                time.sleep(1)
                                 st.rerun()
                             else:
-                                # El portero no dejó entrar porque se alcanzó el límite
+                                # d) Si no está permitido, mostramos el botón para FORZAR entrada
                                 st.error(f"🚫 {mensaje}")
+                                st.warning("¿Deseas cerrar tus otras sesiones abiertas e iniciar sesión aquí?")
+                                
+                                # Botón secundario para forzar la entrada expulsando lo anterior
+                                if st.button("Sí, cerrar otras sesiones y entrar", key="btn_forzar_entrada", use_container_width=True):
+                                    exito_f, msg_f, token_f = iniciar_sesion_robusta(owner_id_temp, usuario_id_temp, limite, conn, forzar=True)
+                                    
+                                    if exito_f:
+                                        st.session_state.session_token = token_f
+                                        st.session_state.owner_id = owner_id_temp
+                                        st.session_state.rol = rol_temp
+                                        st.session_state.authenticated = True
+                                        
+                                        if es_admin:
+                                            st.session_state.user = user_auth_temp
+                                        else:
+                                            st.session_state.empleado_id = usuario_id_temp
+                                            st.session_state.nombre_empleado = empleado_data_temp.get('nombre', '')
+                                            class EmpleadoUser:
+                                                def __init__(self, owner, email_val):
+                                                    self.id = owner
+                                                    self.email = email_val
+                                                    self.user_metadata = {'rol': 'empleado'}
+                                            st.session_state.user = EmpleadoUser(owner_id_temp, email)
+                                        
+                                        st.success("Sesiones anteriores cerradas. ¡Entrando!")
+                                        time.sleep(1)
+                                        st.rerun()
 
                     else:
                         st.warning("Por favor, completa todos los campos")
