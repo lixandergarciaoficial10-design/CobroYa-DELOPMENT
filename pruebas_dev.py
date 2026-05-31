@@ -154,6 +154,16 @@ if "user" not in st.session_state:
 if "page" not in st.session_state:
     st.session_state.page = "login"
 
+# --- LÓGICA DE CONTROL DE SESIÓN ACTIVA ---
+if "session_token" in st.session_state and st.session_state.get("authenticated", False):
+    sigue_vivo = latido_sesion(st.session_state.session_token, conn)
+    if not sigue_vivo:
+        # ¡Alguien te sacó! Limpiamos todo
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+        st.session_state.mensaje_error = "⚠️ Tu sesión fue cerrada porque se inició sesión desde otro dispositivo."
+        st.rerun()
+        
 # --- LÓGICA DE CONTROL DE ACCESO (EL MURO) ---
 if not st.session_state.authenticated:
     # 2. TU CSS RADICAL (Intacto y Completo)
