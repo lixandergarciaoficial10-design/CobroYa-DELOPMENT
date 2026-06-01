@@ -4206,32 +4206,51 @@ elif menu == "Configuración":
             uploaded_logo = st.file_uploader("Subir Logo (PNG/JPG)", type=["png", "jpg", "jpeg"])
             
             if st.form_submit_button("Guardar Cambios", use_container_width=True):
-                import base64
-                
-                data_update = {
-                    "nombre_negocio": new_nombre if new_nombre else None,
-                    "rnc": new_rnc if new_rnc else None,
-                    "telefono": new_tel if new_tel else None,
-                    "user_id": u_id
-                }
-                
-                if uploaded_logo:
-                    try:
-                        base64_logo = base64.b64encode(uploaded_logo.read()).decode()
-                        data_update["logo_base64"] = base64_logo
-                    except Exception as e:
-                        st.error(f"Error al procesar el logo: {str(e)}")
-                
+            data_update = {
+                "nombre_negocio": new_nombre if new_nombre else None,
+                "rnc": new_rnc if new_rnc else None,
+                "telefono": new_tel if new_tel else None,
+                "user_id": u_id
+            }
+
+            if uploaded_logo:
                 try:
-                    conn.table("configuracion").upsert(data_update, on_conflict="user_id").execute()
+                    # 1. OPTIMIZACIÓN (Mismo tamaño, menos peso)
+                    from PIL import Image
+                    import io
+                    import time
                     
-                    # Mostramos el mensaje claro con las instrucciones
-                    st.success("✅ ¡Cambios aplicados correctamente! Por favor, recarga la página (F5) o sal y vuelve a entrar para ver los cambios reflejados.")
+                    img = Image.open(uploaded_logo)
+                    buffer = io.BytesIO()
+                    # Mantenemos dimensiones originales, solo bajamos peso con WebP
+                    img.save(buffer, format="WEBP", quality=85)
+                    buffer.seek(0)
+
+                    # 2. SUBIDA AL STORAGE
+                    file_name = f"logo_{u_id}_{int(time.time())}.webp"
+                    path_on_supa = f"public/{file_name}"
                     
-                    # ⚠️ IMPORTANTE: Eliminamos st.rerun() para que el mensaje no desaparezca.
-                    
+                    conn.storage.from_("logos_negocios").upload(
+                        path=path_on_supa,
+                        file=buffer.getvalue(),
+                        file_options={"content-type": "image/webp", "x-upsert": "true"}
+                    )
+
+                    # 3. OBTENER URL Y LIMPIAR BASE64
+                    url_publica = conn.storage.from_("logos_negocios").get_public_url(path_on_supa)
+                    data_update["logo_url"] = url_publica
+                    data_update["logo_base64"] = None # Borramos el viejo para liberar espacio
                 except Exception as e:
-                    st.error(f"Error al guardar: {str(e)}")
+                    st.error(f"Error al procesar el logo: {str(e)}")
+
+            try:
+                # Usamos upsert para actualizar los datos
+                conn.table("configuracion").upsert(data_update, on_conflict="user_id").execute()
+                st.success("✅ ¡Configuración optimizada! Recarga la página para aplicar los cambios.")
+                time.sleep(1)
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error al guardar: {e}")
                     
     elif st.session_state.config_sub == "Equipo":
         if st.button("← Volver", key="back_equipo"): st.session_state.config_sub = "Principal"; st.rerun()
