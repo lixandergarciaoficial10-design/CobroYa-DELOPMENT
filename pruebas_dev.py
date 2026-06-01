@@ -328,13 +328,19 @@ if not st.session_state.authenticated:
                         st.rerun()
                 
 # --- LÓGICA DE INICIO DE SESIÓN CORREGIDA Y MODAL INVASIVO (Lixander Edition) ---
-                @st.dialog("⚠️ Límite de dispositivos alcanzado")
+                # --- DEFINICIÓN DEL MODAL INVASIVO (AL CENTRO DE LA PANTALLA) ---
+                @st.dialog("⚠️ Límite de dispositivos")
                 def modal_forzar_sesion():
                     datos = st.session_state.forzar_login_datos
-                    st.markdown("""
+                    
+                    # Rescatamos el mensaje exacto que nos dio el portero (ej: "Límite alcanzado (1/1)")
+                    msg_limite = datos.get("mensaje_bloqueo", f"Límite alcanzado ({datos['limite']}/{datos['limite']})")
+                    
+                    st.markdown(f"""
                         <div style="background-color: #FEF2F2; border: 1px solid #EF4444; padding: 15px; border-radius: 10px; margin-bottom: 15px;">
-                            <p style="color: #B91C1C; font-size: 14px; margin-bottom: 0;"><b>¡Atención!</b> Hay más personas usando tu cuenta o dejaste una sesión abierta en otro equipo.</p>
-                            <p style="color: #B91C1C; font-size: 14px; margin-top: 10px; margin-bottom: 0;">¿Deseas desconectarlos y entrar aquí?</p>
+                            <p style="color: #991B1B; font-size: 15px; margin-bottom: 0;"><b>🚫 {msg_limite}</b></p>
+                            <p style="color: #B91C1C; font-size: 14px; margin-top: 10px; margin-bottom: 0;">Parece que dejaste una sesión abierta en otro equipo o alguien más está usando tu cuenta.</p>
+                            <p style="color: #B91C1C; font-size: 14px; margin-top: 10px; margin-bottom: 0;">¿Deseas desconectarlos forzosamente y entrar en este equipo?</p>
                         </div>
                     """, unsafe_allow_html=True)
                     
@@ -479,12 +485,12 @@ if not st.session_state.authenticated:
                                 time.sleep(1)
                                 st.rerun()
                             else:
-                                # d) Si no está permitido, Guardamos los datos y RECARGAMOS
-                                # Esto provocará que al recargar, se dispare la ventana emergente al frente.
+                                # d) Si no está permitido, Guardamos los datos incluyendo el mensaje con los números (X/Y)
                                 st.session_state.forzar_login_datos = {
                                     "owner_id": owner_id_temp,
                                     "usuario_id": usuario_id_temp,
                                     "limite": limite,
+                                    "mensaje_bloqueo": mensaje, # AQUI GUARDAMOS EL "1/1" o "2/2"
                                     "es_admin": es_admin,
                                     "user_auth": user_auth_temp,
                                     "rol": rol_temp,
