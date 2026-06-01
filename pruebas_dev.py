@@ -4115,6 +4115,21 @@ elif menu == "Configuración":
 
     # --- 3. VISTA PRINCIPAL (EL GRID) ---
     if st.session_state.config_sub == "Principal":
+        # 1. Preparación de Datos del Logo (Híbrido)
+        # Asumiendo que 'biz' es el diccionario con los datos de la tabla 'configuracion'
+        logo_url_db = biz.get("logo_url")
+        logo_b64_db = biz.get("logo_base64")
+
+        if logo_url_db:
+            img_src = logo_url_db
+        elif logo_b64_db:
+            img_src = f"data:image/png;base64,{logo_b64_db}"
+        else:
+            img_src = None
+
+        # HTML del logo o Avatar
+        logo_html = f'<img src="{img_src}" style="width:100%;height:100%;object-fit:cover;">' if img_src else "👤"
+
         # Header Perfil
         u_col1, u_col2 = st.columns([3, 1])
         with u_col2:
@@ -4125,7 +4140,7 @@ elif menu == "Configuración":
                         <div style="font-size: 12px; color: #64748B;">Admin CobroYa</div>
                     </div>
                     <div style="width: 42px; height: 42px; border-radius: 50%; background: #F1F5F9; display: flex; align-items: center; justify-content: center; overflow: hidden; border: 2px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-                        {f'<img src="data:image/png;base64,{logo_data}" style="width:100%;height:100%;object-fit:cover;">' if logo_data else "👤"}
+                        {logo_html}
                     </div>
                 </div>
             """, unsafe_allow_html=True)
@@ -4158,39 +4173,49 @@ elif menu == "Configuración":
         with s3:
             st.markdown('<div class="stat-bar"><span style="color:#64748B; font-size:11px; text-transform:uppercase;">Seguridad</span><br><b style="color:#22C55E;">Sistema Activo</b></div>', unsafe_allow_html=True)
 
-        # GRID DE OPCIONES
+        st.write("") # Espaciador
+
+        # GRID DE OPCIONES - Fila 1
         g1, g2, g3 = st.columns(3)
         with g1:
             st.markdown('<div class="card-apple"><div class="icon-circle bg-blue">🏢</div><div><div class="title-card">Perfil Negocio</div><div class="desc-card">Nombre, RNC, teléfonos y logo de tu empresa.</div></div></div>', unsafe_allow_html=True)
             if st.button("Abrir Perfil", key="btn_p_nav", use_container_width=True):
-                st.session_state.config_sub = "Perfil"; st.rerun()
+                st.session_state.config_sub = "Perfil"
+                st.rerun()
 
         with g2:
             st.markdown('<div class="card-apple"><div class="icon-circle bg-purple">👥</div><div><div class="title-card">Mi Equipo</div><div class="desc-card">Gestiona accesos y roles de tus empleados.</div></div></div>', unsafe_allow_html=True)
             if st.button("Abrir Equipo", key="btn_e_nav", use_container_width=True):
-                st.session_state.config_sub = "Equipo"; st.rerun()
+                st.session_state.config_sub = "Equipo"
+                st.rerun()
 
         with g3:
             st.markdown('<div class="card-apple"><div class="icon-circle bg-orange">📝</div><div><div class="title-card">Cláusulas</div><div class="desc-card">Edita el texto legal de tus contratos de cobro.</div></div></div>', unsafe_allow_html=True)
             if st.button("Abrir Cláusulas", key="btn_c_nav", use_container_width=True):
-                st.session_state.config_sub = "Clausulas"; st.rerun()
+                st.session_state.config_sub = "Clausulas"
+                st.rerun()
 
-        st.write("")
+        st.write("") # Espaciador entre filas
+
+        # GRID DE OPCIONES - Fila 2
         g4, g5, g6 = st.columns(3)
         with g4:
             st.markdown('<div class="card-apple"><div class="icon-circle bg-orange">🔐</div><div><div class="title-card">Seguridad</div><div class="desc-card">Cambio de contraseña y llaves de acceso.</div></div></div>', unsafe_allow_html=True)
             if st.button("Abrir Seguridad", key="btn_s_nav", use_container_width=True):
-                st.session_state.config_sub = "Seguridad"; st.rerun()
+                st.session_state.config_sub = "Seguridad"
+                st.rerun()
 
         with g5:
             st.markdown('<div class="card-apple"><div class="icon-circle bg-blue">💳</div><div><div class="title-card">Mi Plan</div><div class="desc-card">Suscripción actual y límites del sistema.</div></div></div>', unsafe_allow_html=True)
             if st.button("Ver Mi Plan", key="btn_plan_nav", use_container_width=True):
-                st.session_state.config_sub = "Plan"; st.rerun()
+                st.session_state.config_sub = "Plan"
+                st.rerun()
 
         with g6:
             st.markdown('<div class="card-apple"><div class="icon-circle bg-purple">🎧</div><div><div class="title-card">Soporte</div><div class="desc-card">WhatsApp, Email y Teléfono directo.</div></div></div>', unsafe_allow_html=True)
             if st.button("Ver Soporte", key="btn_sop_nav", use_container_width=True):
-                st.session_state.config_sub = "Soporte"; st.rerun()
+                st.session_state.config_sub = "Soporte"
+                st.rerun()
 
     # --- 4. SUBSECCIONES (LÓGICA COMPLETA) ---
 
