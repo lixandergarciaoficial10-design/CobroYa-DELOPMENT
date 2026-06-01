@@ -4220,7 +4220,7 @@ elif menu == "Configuración":
     # --- 4. SUBSECCIONES (LÓGICA COMPLETA) ---
 
     elif st.session_state.config_sub == "Perfil":
-        if st.button("← Volver", key="back_perfil"): st.session_state.config_sub = "Principal"; st.rerun()
+    if st.button("← Volver", key="back_perfil"): st.session_state.config_sub = "Principal"; st.rerun()
         st.markdown("### 🏢 Configuración de Perfil de Negocio")
         
         with st.form("form_perfil"):
