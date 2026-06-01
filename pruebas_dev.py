@@ -327,8 +327,51 @@ if not st.session_state.authenticated:
                         st.session_state.page = "forgot"
                         st.rerun()
                 
-# --- LÓGICA DE INICIO DE SESIÓN CORREGIDA (Lixander Edition) ---
-                # --- LÓGICA DE INICIO DE SESIÓN CORREGIDA (Lixander Edition) ---
+# --- LÓGICA DE INICIO DE SESIÓN CORREGIDA Y MODAL INVASIVO (Lixander Edition) ---
+                @st.dialog("⚠️ Límite de dispositivos alcanzado")
+                def modal_forzar_sesion():
+                    datos = st.session_state.forzar_login_datos
+                    st.markdown("""
+                        <div style="background-color: #FEF2F2; border: 1px solid #EF4444; padding: 15px; border-radius: 10px; margin-bottom: 15px;">
+                            <p style="color: #B91C1C; font-size: 14px; margin-bottom: 0;"><b>¡Atención!</b> Hay más personas usando tu cuenta o dejaste una sesión abierta en otro equipo.</p>
+                            <p style="color: #B91C1C; font-size: 14px; margin-top: 10px; margin-bottom: 0;">¿Deseas desconectarlos y entrar aquí?</p>
+                        </div>
+                    """, unsafe_allow_html=True)
+                    
+                    if st.button("Desconectar otros y entrar aquí", type="primary", use_container_width=True):
+                        # Llamamos al portero en modo FORZAR
+                        exito_f, msg_f, token_f = iniciar_sesion_robusta(
+                            datos["owner_id"], datos["usuario_id"], datos["limite"], conn, forzar=True
+                        )
+                        
+                        if exito_f:
+                            st.session_state.session_token = token_f
+                            st.session_state.owner_id = datos["owner_id"]
+                            st.session_state.rol = datos["rol"]
+                            st.session_state.authenticated = True
+                            
+                            if datos["es_admin"]:
+                                st.session_state.user = datos["user_auth"]
+                            else:
+                                st.session_state.empleado_id = datos["usuario_id"]
+                                st.session_state.nombre_empleado = datos["nombre"]
+                                class EmpleadoUser:
+                                    def __init__(self, o, e): 
+                                        self.id = o
+                                        self.email = e
+                                        self.user_metadata = {'rol': 'empleado'}
+                                st.session_state.user = EmpleadoUser(datos["owner_id"], datos["email"])
+                            
+                            # Limpiamos el aviso y entramos
+                            del st.session_state.forzar_login_datos
+                            st.rerun()
+                        else:
+                            st.error("Hubo un error al forzar la sesión.")
+                            
+                    if st.button("Cancelar", use_container_width=True):
+                        del st.session_state.forzar_login_datos
+                        st.rerun()
+
                 # --- LÓGICA DE INICIO DE SESIÓN MEJORADA (Anti-Bloqueo) ---
                 if st.button("Iniciar sesión", type="primary", use_container_width=True):
                     if email and password:
@@ -436,8 +479,8 @@ if not st.session_state.authenticated:
                                 time.sleep(1)
                                 st.rerun()
                             else:
-                                # d) Si no está permitido, NO MOSTRAMOS EL BOTÓN AQUÍ. 
-                                # Guardamos los datos en la sesión para mostrar el panel invasivo fuera del botón.
+                                # d) Si no está permitido, Guardamos los datos y RECARGAMOS
+                                # Esto provocará que al recargar, se dispare la ventana emergente al frente.
                                 st.session_state.forzar_login_datos = {
                                     "owner_id": owner_id_temp,
                                     "usuario_id": usuario_id_temp,
@@ -448,57 +491,15 @@ if not st.session_state.authenticated:
                                     "nombre": empleado_data_temp.get('nombre', '') if empleado_data_temp else '',
                                     "email": email
                                 }
+                                st.rerun()
                     else:
                         st.warning("Por favor, completa todos los campos")
 
                 # ----------------------------------------------------------------
-                # 4. PANEL INVASIVO (Fuera del botón principal para evitar reinicios)
+                # 4. LANZAR EL MODAL AL FRENTE (Si el portero denegó el acceso)
                 # ----------------------------------------------------------------
                 if "forzar_login_datos" in st.session_state:
-                    datos = st.session_state.forzar_login_datos
-                    
-                    st.markdown("""
-                        <div style="background-color: #FEF2F2; border: 2px solid #EF4444; padding: 20px; border-radius: 12px; margin-top: 15px; margin-bottom: 15px;">
-                            <h3 style="color: #991B1B; margin-top: 0; font-size: 18px;">⚠️ Límite de dispositivos alcanzado</h3>
-                            <p style="color: #B91C1C; font-size: 14px; margin-bottom: 0;">Hay más personas usando tu cuenta o dejaste una sesión abierta. ¿Deseas desconectarlos y entrar en este equipo?</p>
-                        </div>
-                    """, unsafe_allow_html=True)
-                    
-                    if st.button("CERRAR OTRAS SESIONES Y ENTRAR AQUÍ", type="primary", use_container_width=True):
-                        # Llamamos al portero en modo FORZAR
-                        exito_f, msg_f, token_f = iniciar_sesion_robusta(
-                            datos["owner_id"], datos["usuario_id"], datos["limite"], conn, forzar=True
-                        )
-                        
-                        if exito_f:
-                            st.session_state.session_token = token_f
-                            st.session_state.owner_id = datos["owner_id"]
-                            st.session_state.rol = datos["rol"]
-                            st.session_state.authenticated = True
-                            
-                            if datos["es_admin"]:
-                                st.session_state.user = datos["user_auth"]
-                            else:
-                                st.session_state.empleado_id = datos["usuario_id"]
-                                st.session_state.nombre_empleado = datos["nombre"]
-                                class EmpleadoUser:
-                                    def __init__(self, o, e): 
-                                        self.id = o
-                                        self.email = e
-                                        self.user_metadata = {'rol': 'empleado'}
-                                st.session_state.user = EmpleadoUser(datos["owner_id"], datos["email"])
-                            
-                            # Limpiamos el aviso y entramos
-                            del st.session_state.forzar_login_datos
-                            st.success("Sesiones anteriores cerradas. ¡Entrando!")
-                            time.sleep(1)
-                            st.rerun()
-                        else:
-                            st.error("Hubo un error al forzar la sesión.")
-                            
-                    if st.button("Cancelar", use_container_width=True):
-                        del st.session_state.forzar_login_datos
-                        st.rerun()
+                    modal_forzar_sesion()
                 
                 st.write("")
                 st.markdown('<div style="text-align: center; font-size: 14px; color: #64748B;">¿No tienes cuenta?</div>', unsafe_allow_html=True)
