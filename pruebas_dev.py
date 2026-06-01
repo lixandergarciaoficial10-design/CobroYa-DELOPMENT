@@ -4059,7 +4059,7 @@ elif menu == "Configuración":
 
     # --- 1. CARGA DE DATOS (DENTRO DEL BLOQUE) ---
     try:
-        res_conf = conn.table("configuracion").select("id, nombre_negocio, rnc, telefono, logo_base64, tipo_plan, clausulas, fecha_vencimiento, direccion, estado_plan").eq("user_id", u_id).execute()
+        res_conf = conn.table("configuracion").select("id, nombre_negocio, rnc, telefono, logo_base64, logo_url, tipo_plan, clausulas, fecha_vencimiento, direccion, estado_plan").eq("user_id", u_id).execute()
         biz = res_conf.data[0] if res_conf.data else {}
     except Exception as e:
         st.error(f"Error cargando configuración: {str(e)}")
