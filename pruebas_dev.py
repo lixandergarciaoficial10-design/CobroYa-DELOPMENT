@@ -4218,64 +4218,87 @@ elif menu == "Configuración":
                 st.rerun()
 
     # --- 4. SUBSECCIONES (LÓGICA COMPLETA) ---
-
     elif st.session_state.config_sub == "Perfil":
-    if st.button("← Volver", key="back_perfil"): st.session_state.config_sub = "Principal"; st.rerun()
-        st.markdown("### 🏢 Configuración de Perfil de Negocio")
-        
-        with st.form("form_perfil"):
-            new_nombre = st.text_input("Nombre del Negocio", biz.get("nombre_negocio", ""))
-            new_rnc = st.text_input("RNC / Cédula", biz.get("rnc", ""))
-            new_tel = st.text_input("Teléfono de Contacto", biz.get("telefono", ""))
-            
-            uploaded_logo = st.file_uploader("Subir Logo (PNG/JPG)", type=["png", "jpg", "jpeg"])
-            
-            if st.form_submit_button("Guardar Cambios", use_container_width=True):
-            data_update = {
-                "nombre_negocio": new_nombre if new_nombre else None,
-                "rnc": new_rnc if new_rnc else None,
-                "telefono": new_tel if new_tel else None,
-                "user_id": u_id
-            }
+        if st.button("← Volver", key="back_perfil"):
+            st.session_state.config_sub = "Principal"
+            st.rerun()
 
-            if uploaded_logo:
+        st.markdown("### 🏢 Perfil del Negocio")
+        st.write("Actualiza la información pública y legal de tu empresa.")
+
+        with st.container(border=True):
+            # 1. Campos de texto con los datos actuales de 'biz'
+            nuevo_nombre = st.text_input("Nombre del Negocio", value=biz.get("nombre_negocio", ""))
+            col_id1, col_id2 = st.columns(2)
+            with col_id1:
+                nuevo_rnc = st.text_input("RNC / Cédula", value=biz.get("rnc", ""))
+            with col_id2:
+                nuevo_tel = st.text_input("Teléfono de Contacto", value=biz.get("telefono", ""))
+            
+            nueva_dir = st.text_area("Dirección Física", value=biz.get("direccion", ""))
+
+            st.write("---")
+            
+            # 2. Gestión de Logo
+            st.markdown("#### 🖼️ Logo de la Empresa")
+            
+            # Mostrar logo actual (Híbrido: URL o Base64)
+            curr_logo_url = biz.get("logo_url")
+            curr_logo_b64 = biz.get("logo_base64")
+            
+            if curr_logo_url or curr_logo_b64:
+                src = curr_logo_url if curr_logo_url else f"data:image/png;base64,{curr_logo_b64}"
+                st.image(src, width=150, caption="Logo actual")
+            
+            uploaded_logo = st.file_uploader("Subir nuevo logo (PNG/JPG)", type=["png", "jpg", "jpeg"], key="perfil_logo_uploader")
+
+            if st.button("💾 Guardar Cambios", type="primary", use_container_width=True):
                 try:
-                    # 1. OPTIMIZACIÓN (Mismo tamaño, menos peso)
-                    from PIL import Image
-                    import io
-                    import time
-                    
-                    img = Image.open(uploaded_logo)
-                    buffer = io.BytesIO()
-                    # Mantenemos dimensiones originales, solo bajamos peso con WebP
-                    img.save(buffer, format="WEBP", quality=85)
-                    buffer.seek(0)
+                    update_data = {
+                        "nombre_negocio": nuevo_nombre,
+                        "rnc": nuevo_rnc,
+                        "telefono": nuevo_tel,
+                        "direccion": nueva_dir
+                    }
 
-                    # 2. SUBIDA AL STORAGE
-                    file_name = f"logo_{u_id}_{int(time.time())}.webp"
-                    path_on_supa = f"public/{file_name}"
-                    
-                    conn.storage.from_("logos_negocios").upload(
-                        path=path_on_supa,
-                        file=buffer.getvalue(),
-                        file_options={"content-type": "image/webp", "x-upsert": "true"}
-                    )
+                    # --- LÓGICA DE OPTIMIZACIÓN Y STORAGE ---
+                    if uploaded_logo:
+                        from PIL import Image
+                        import io
+                        import time
+                        
+                        # Mantenemos dimensiones originales pero optimizamos peso
+                        img = Image.open(uploaded_logo)
+                        buffer = io.BytesIO()
+                        img.save(buffer, format="WEBP", quality=85) # WebP es mucho más ligero
+                        buffer.seek(0)
 
-                    # 3. OBTENER URL Y LIMPIAR BASE64
-                    url_publica = conn.storage.from_("logos_negocios").get_public_url(path_on_supa)
-                    data_update["logo_url"] = url_publica
-                    data_update["logo_base64"] = None # Borramos el viejo para liberar espacio
+                        # Nombre único para evitar problemas de caché
+                        file_path = f"public/logo_{u_id}_{int(time.time())}.webp"
+                        
+                        # Subida al Bucket 'logos_negocios' que creamos
+                        conn.storage.from_("logos_negocios").upload(
+                            path=file_path,
+                            file=buffer.getvalue(),
+                            file_options={"content-type": "image/webp", "x-upsert": "true"}
+                        )
+
+                        # Generamos la URL pública
+                        url_logotipo = conn.storage.from_("logos_negocios").get_public_url(file_path)
+                        
+                        # Guardamos la URL y LIMPIAMOS el Base64 viejo para optimizar la DB
+                        update_data["logo_url"] = url_logotipo
+                        update_data["logo_base64"] = None 
+
+                    # Ejecutar actualización en Supabase
+                    conn.table("configuracion").update(update_data).eq("user_id", u_id).execute()
+                    
+                    st.success("✅ Perfil actualizado y logo optimizado en la nube.")
+                    time.sleep(1)
+                    st.rerun()
+                    
                 except Exception as e:
-                    st.error(f"Error al procesar el logo: {str(e)}")
-
-            try:
-                # Usamos upsert para actualizar los datos
-                conn.table("configuracion").upsert(data_update, on_conflict="user_id").execute()
-                st.success("✅ ¡Configuración optimizada! Recarga la página para aplicar los cambios.")
-                time.sleep(1)
-                st.rerun()
-            except Exception as e:
-                st.error(f"Error al guardar: {e}")
+                    st.error(f"Error al guardar: {e}")
                     
     elif st.session_state.config_sub == "Equipo":
         if st.button("← Volver", key="back_equipo"): st.session_state.config_sub = "Principal"; st.rerun()
